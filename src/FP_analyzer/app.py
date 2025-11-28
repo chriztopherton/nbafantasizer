@@ -12,23 +12,34 @@ st.set_page_config(layout="wide")
 st.title("Fantasy Points Analyzer")
 st.write("This is a tool to analyze fantasy points for a player over time.")
 
-#load data
-df = kagglehub.dataset_load(
-    KaggleDatasetAdapter.PANDAS,
-    "eoinamoore/historical-nba-data-and-player-box-scores",
-    "PlayerStatistics.csv",
-)
-df_fp = df.copy()
-df_fp['player_name'] = df_fp['firstName'] + ' ' + df_fp['lastName']
-if 'gameDateTimeEst' in df_fp.columns:
-    df_fp['gameDateTimeEst_raw'] = df_fp['gameDateTimeEst'].copy()
-    df_fp['gameDateTimeEst'] = pd.to_datetime(df_fp['gameDateTimeEst'], format='ISO8601', errors='coerce')
-    if df_fp['gameDateTimeEst'].isna().sum() > len(df_fp) * 0.1:
-        mask = df_fp['gameDateTimeEst'].isna()
-        df_fp.loc[mask, 'gameDateTimeEst'] = pd.to_datetime(
-            df_fp.loc[mask, 'gameDateTimeEst_raw'], 
-            errors='coerce'
-        )
+#load data with caching to avoid redownloading on every filter change
+@st.cache_data
+def load_and_process_data():
+    """Load and process the Kaggle dataset. This function is cached to avoid redownloading."""
+    df = kagglehub.dataset_load(
+        KaggleDatasetAdapter.PANDAS,
+        "eoinamoore/historical-nba-data-and-player-box-scores",
+        "PlayerStatistics.csv",
+    )
+    df_fp = df.copy()
+    df_fp['player_name'] = df_fp['firstName'] + ' ' + df_fp['lastName']
+    if 'gameDateTimeEst' in df_fp.columns:
+        df_fp['gameDateTimeEst_raw'] = df_fp['gameDateTimeEst'].copy()
+        df_fp['gameDateTimeEst'] = pd.to_datetime(df_fp['gameDateTimeEst'], format='ISO8601', errors='coerce', utc=True)
+        if df_fp['gameDateTimeEst'].isna().sum() > len(df_fp) * 0.1:
+            mask = df_fp['gameDateTimeEst'].isna()
+            df_fp.loc[mask, 'gameDateTimeEst'] = pd.to_datetime(
+                df_fp.loc[mask, 'gameDateTimeEst_raw'], 
+                errors='coerce',
+                utc=True
+            )
+        # Convert to timezone-naive if needed
+        if df_fp['gameDateTimeEst'].dt.tz is not None:
+            df_fp['gameDateTimeEst'] = df_fp['gameDateTimeEst'].dt.tz_localize(None)
+    
+    return df_fp
+
+df_fp = load_and_process_data()
 
 # df_fp['efficiency'] = df_fp['fieldGoalsMade']/df_fp['fieldGoalsAttempted']
 #calculate fantasy points
@@ -219,7 +230,7 @@ if date_col:
                     axis=0  # Apply gradient along rows (column-wise)
                 )
                 
-                st.dataframe(styled_df, use_container_width=True)
+                st.dataframe(styled_df, width='stretch')
                 # st.dataframe(player_data_ytd, use_container_width=True)
             with stats:
                 st.subheader("Stats")
@@ -228,7 +239,7 @@ if date_col:
                 # Display aggregated averages as a single table
                 st.subheader("Aggregated Averages by Time Window")
                 if len(aggregated_df) > 0:
-                    st.dataframe(aggregated_df, use_container_width=True)
+                    st.dataframe(aggregated_df, width='stretch')
             
             # Use YTD data for the main chart
             x = player_data_ytd[date_col].values
@@ -325,7 +336,7 @@ if date_col:
                 margin=dict(l=60, r=20, t=60, b=50)
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             
     
         else:
