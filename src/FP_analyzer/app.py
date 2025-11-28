@@ -17,12 +17,17 @@ st.write("This is a tool to analyze fantasy points for a player over time.")
 @st.cache_data(ttl=None, show_spinner="Loading dataset from Kaggle (this may take a minute on first load)...")
 def load_and_process_data():
     """Load and process the Kaggle dataset. This function is cached to avoid redownloading."""
-    # Load with low_memory=False to avoid dtype warnings and improve performance
-    df = kagglehub.dataset_load(
-        KaggleDatasetAdapter.PANDAS,
-        "eoinamoore/historical-nba-data-and-player-box-scores",
-        "PlayerStatistics.csv",
-    )
+    try:
+        # Load with low_memory=False to avoid dtype warnings and improve performance
+        df = kagglehub.dataset_load(
+            KaggleDatasetAdapter.PANDAS,
+            "eoinamoore/historical-nba-data-and-player-box-scores",
+            "PlayerStatistics.csv",
+        )
+    except Exception as e:
+        st.error(f"Error loading dataset from Kaggle: {e}")
+        # Return empty dataframe to prevent further errors
+        return pd.DataFrame()
     
     # Process in-place where possible to save memory
     df["player_name"] = df["firstName"] + " " + df["lastName"]
@@ -71,6 +76,11 @@ def load_and_process_data():
 
 df_fp = load_and_process_data()
 
+# Check if data loaded successfully
+if df_fp is None or len(df_fp) == 0:
+    st.error("Failed to load dataset. Please try refreshing the page.")
+    st.stop()
+
 # display data
 # st.dataframe(df_fp)
 
@@ -110,8 +120,12 @@ if start_date_filter > end_date_filter:
     st.stop()
 
 # display fantasy points over time for a specific player
-# Filter without copy first - we'll copy only if we need to modify
-player_data = df_fp[df_fp["player_name"] == player_name]
+# Copy immediately to avoid SettingWithCopyWarning when modifying
+try:
+    player_data = df_fp[df_fp["player_name"] == player_name].copy()
+except Exception as e:
+    st.error(f"Error filtering player data: {e}")
+    st.stop()
 
 # Find and convert date column
 date_col = None
@@ -122,39 +136,49 @@ for col in ["gameDateTimeEst", "game_date", "date", "GAME_DATE", "DATE_EST"]:
 
 if date_col:
     if len(player_data) > 0:
-        if not pd.api.types.is_datetime64_any_dtype(player_data[date_col]):
-            player_data[date_col] = pd.to_datetime(player_data[date_col], errors="coerce", utc=True)
-            if player_data[date_col].dt.tz is not None:
-                player_data[date_col] = player_data[date_col].dt.tz_localize(None)
-        else:
-            if player_data[date_col].dt.tz is not None:
-                player_data[date_col] = player_data[date_col].dt.tz_localize(None)
+        try:
+            if not pd.api.types.is_datetime64_any_dtype(player_data[date_col]):
+                player_data[date_col] = pd.to_datetime(player_data[date_col], errors="coerce", utc=True)
+                if player_data[date_col].dt.tz is not None:
+                    player_data[date_col] = player_data[date_col].dt.tz_localize(None)
+            else:
+                if player_data[date_col].dt.tz is not None:
+                    player_data[date_col] = player_data[date_col].dt.tz_localize(None)
 
-            nan_count = player_data[date_col].isna().sum()
-            if nan_count > 0:
-                if "gameDateTimeEst_raw" in player_data.columns:
-                    mask = player_data[date_col].isna()
-                    if mask.sum() > 0:
-                        player_data.loc[mask, date_col] = pd.to_datetime(
-                            player_data.loc[mask, "gameDateTimeEst_raw"],
-                            errors="coerce",
-                            format="ISO8601",
-                        )
-                        if player_data[date_col].dt.tz is not None:
-                            player_data[date_col] = player_data[date_col].dt.tz_localize(None)
+                nan_count = player_data[date_col].isna().sum()
+                if nan_count > 0:
+                    if "gameDateTimeEst_raw" in player_data.columns:
+                        mask = player_data[date_col].isna()
+                        if mask.sum() > 0:
+                            player_data.loc[mask, date_col] = pd.to_datetime(
+                                player_data.loc[mask, "gameDateTimeEst_raw"],
+                                errors="coerce",
+                                format="ISO8601",
+                            )
+                            if player_data[date_col].dt.tz is not None:
+                                player_data[date_col] = player_data[date_col].dt.tz_localize(None)
+        except Exception as e:
+            st.warning(f"Warning: Could not process date column: {e}")
 
-    # Only copy when we need to modify
-    player_data = player_data.dropna(subset=[date_col, "FP"])
+    # Drop NaN values
+    try:
+        player_data = player_data.dropna(subset=[date_col, "FP"])
+    except Exception as e:
+        st.error(f"Error dropping NaN values: {e}")
+        st.stop()
 
-    start_date = pd.Timestamp(start_date_filter).normalize()
-    end_date = pd.Timestamp(end_date_filter).normalize()
-    player_data = player_data.copy()  # Copy before modifying
-    player_data["date_only"] = pd.to_datetime(player_data[date_col]).dt.normalize()
+    try:
+        start_date = pd.Timestamp(start_date_filter).normalize()
+        end_date = pd.Timestamp(end_date_filter).normalize()
+        player_data["date_only"] = pd.to_datetime(player_data[date_col]).dt.normalize()
 
-    player_data = player_data[
-        (player_data["date_only"] >= start_date) & (player_data["date_only"] <= end_date)
-    ]
-    player_data = player_data.sort_values(date_col)
+        player_data = player_data[
+            (player_data["date_only"] >= start_date) & (player_data["date_only"] <= end_date)
+        ]
+        player_data = player_data.sort_values(date_col)
+    except Exception as e:
+        st.error(f"Error filtering by date range: {e}")
+        st.stop()
 
     if len(player_data) > 0:
         # player_data is already filtered to the selected date range, so use it directly
@@ -176,27 +200,30 @@ if date_col:
 
             # Build aggregated data for all time windows
             aggregated_rows = []
-            for window_name, days in time_windows.items():
-                if days is None:
-                    # YTD: use all data
-                    window_data = player_data_ytd.copy()
-                else:
-                    # Last N days: filter to most recent N days
-                    cutoff_date = most_recent_date - timedelta(days=days)
-                    window_data = player_data_ytd[player_data_ytd[date_col] >= cutoff_date]
+            try:
+                for window_name, days in time_windows.items():
+                    if days is None:
+                        # YTD: use all data
+                        window_data = player_data_ytd.copy()
+                    else:
+                        # Last N days: filter to most recent N days
+                        cutoff_date = most_recent_date - timedelta(days=days)
+                        window_data = player_data_ytd[player_data_ytd[date_col] >= cutoff_date].copy()
 
-                if len(window_data) > 0:
-                    row = {
-                        "Time Window": window_name,
-                        "Fantasy Points": window_data["FP"].mean(),
-                        "Points": window_data["points"].mean(),
-                        "Rebounds": window_data["reboundsTotal"].mean(),
-                        "Assists": window_data["assists"].mean(),
-                        "Blocks": window_data["blocks"].mean(),
-                        "Steals": window_data["steals"].mean(),
-                        "Turnovers": window_data["turnovers"].mean(),
-                    }
-                    aggregated_rows.append(row)
+                    if len(window_data) > 0:
+                        row = {
+                            "Time Window": window_name,
+                            "Fantasy Points": window_data["FP"].mean(),
+                            "Points": window_data["points"].mean(),
+                            "Rebounds": window_data["reboundsTotal"].mean(),
+                            "Assists": window_data["assists"].mean(),
+                            "Blocks": window_data["blocks"].mean(),
+                            "Steals": window_data["steals"].mean(),
+                            "Turnovers": window_data["turnovers"].mean(),
+                        }
+                        aggregated_rows.append(row)
+            except Exception as e:
+                st.warning(f"Warning: Could not calculate all time window averages: {e}")
 
             # Create single DataFrame with all aggregated averages
             aggregated_df = pd.DataFrame(aggregated_rows)
@@ -204,11 +231,27 @@ if date_col:
             game_log, stats = st.tabs(["Game Log", "Stats"])
             with game_log:
                 st.subheader("Game Log")
-                # Prepare dataframe for display - only copy when needed for display
-                display_df = player_data_ytd[
-                    [
-                        "game_loc_date",
-                        "FP",
+                # Prepare dataframe for display - copy to avoid modification issues
+                try:
+                    display_df = player_data_ytd[
+                        [
+                            "game_loc_date",
+                            "FP",
+                            "numMinutes",
+                            "points",
+                            "reboundsTotal",
+                            "assists",
+                            "steals",
+                            "blocks",
+                            "turnovers",
+                            "fieldGoalsPercentage",
+                            "freeThrowsPercentage",
+                            "plusMinusPoints",
+                        ]
+                    ].sort_values(by="game_loc_date", ascending=False).copy()
+
+                    # Format numeric columns as integers (except FP, fieldGoalsPercentage, freeThrowsPercentage)
+                    integer_columns = [
                         "numMinutes",
                         "points",
                         "reboundsTotal",
@@ -216,35 +259,23 @@ if date_col:
                         "steals",
                         "blocks",
                         "turnovers",
-                        "fieldGoalsPercentage",
-                        "freeThrowsPercentage",
                         "plusMinusPoints",
                     ]
-                ].sort_values(by="game_loc_date", ascending=False)
+                    for col in integer_columns:
+                        if col in display_df.columns:
+                            # Round and convert to nullable integer type
+                            display_df[col] = (
+                                pd.to_numeric(display_df[col], errors="coerce").round().astype("Int64")
+                            )
 
-                # Format numeric columns as integers (except FP, fieldGoalsPercentage, freeThrowsPercentage)
-                integer_columns = [
-                    "numMinutes",
-                    "points",
-                    "reboundsTotal",
-                    "assists",
-                    "steals",
-                    "blocks",
-                    "turnovers",
-                    "plusMinusPoints",
-                ]
-                for col in integer_columns:
-                    if col in display_df.columns:
-                        # Round and convert to nullable integer type
-                        display_df[col] = (
-                            pd.to_numeric(display_df[col], errors="coerce").round().astype("Int64")
-                        )
-
-                # Format decimal columns to 2 decimal places
-                decimal_columns = ["FP", "fieldGoalsPercentage", "freeThrowsPercentage"]
-                for col in decimal_columns:
-                    if col in display_df.columns:
-                        display_df[col] = pd.to_numeric(display_df[col], errors="coerce").round(2)
+                    # Format decimal columns to 2 decimal places
+                    decimal_columns = ["FP", "fieldGoalsPercentage", "freeThrowsPercentage"]
+                    for col in decimal_columns:
+                        if col in display_df.columns:
+                            display_df[col] = pd.to_numeric(display_df[col], errors="coerce").round(2)
+                except Exception as e:
+                    st.error(f"Error preparing display dataframe: {e}")
+                    st.stop()
 
                 # Apply green gradient styling to specified columns
                 columns_to_style = [
@@ -303,41 +334,50 @@ if date_col:
             formatted_dates = pd.to_datetime(player_data_ytd[date_col]).dt.strftime("%b %d, %Y")
 
             # Get opponent information - use pre-computed column if available, otherwise compute
-            if "opponent_with_at" in player_data_ytd.columns:
-                opponent_info = player_data_ytd["opponent_with_at"].values
-            else:
-                if "home" in player_data_ytd.columns:
-                    opponent_info = np.where(
-                        player_data_ytd["home"] == 0,
-                        "@" + player_data_ytd["opponentteamName"],
-                        player_data_ytd["opponentteamName"],
+            try:
+                if "opponent_with_at" in player_data_ytd.columns:
+                    opponent_info = player_data_ytd["opponent_with_at"].values
+                else:
+                    if "home" in player_data_ytd.columns:
+                        opponent_info = np.where(
+                            player_data_ytd["home"] == 0,
+                            "@" + player_data_ytd["opponentteamName"],
+                            player_data_ytd["opponentteamName"],
+                        )
+                    else:
+                        opponent_info = player_data_ytd["opponentteamName"].values
+
+                # Determine win/loss from plusMinusPoints (positive = win, negative = loss) - vectorized
+                if "plusMinusPoints" in player_data_ytd.columns:
+                    pm_values = player_data_ytd["plusMinusPoints"].values
+                    win_loss = np.where(
+                        pd.isna(pm_values), "N/A",
+                        np.where(pm_values > 0, "W",
+                        np.where(pm_values < 0, "L", "T"))
                     )
                 else:
-                    opponent_info = player_data_ytd["opponentteamName"].values
+                    win_loss = np.array(["N/A"] * len(player_data_ytd))
 
-            # Determine win/loss from plusMinusPoints (positive = win, negative = loss) - vectorized
-            if "plusMinusPoints" in player_data_ytd.columns:
-                pm_values = player_data_ytd["plusMinusPoints"].values
-                win_loss = np.where(
-                    pd.isna(pm_values), "N/A",
-                    np.where(pm_values > 0, "W",
-                    np.where(pm_values < 0, "L", "T"))
-                )
-            else:
-                win_loss = np.array(["N/A"] * len(player_data_ytd))
-
-            # Create custom hover text - vectorized approach
-            hover_texts = [
-                f"<b>Date:</b> {date}<br>"
-                f"<b>Opponent:</b> {opp}<br>"
-                f"<b>Result:</b> {wl}<br>"
-                f"<b>Fantasy Points:</b> {fp:.1f}"
-                for date, opp, wl, fp in zip(formatted_dates, opponent_info, win_loss, y)
-            ]
+                # Create custom hover text - vectorized approach
+                hover_texts = [
+                    f"<b>Date:</b> {date}<br>"
+                    f"<b>Opponent:</b> {opp}<br>"
+                    f"<b>Result:</b> {wl}<br>"
+                    f"<b>Fantasy Points:</b> {fp:.1f}"
+                    for date, opp, wl, fp in zip(formatted_dates, opponent_info, win_loss, y)
+                ]
+            except Exception as e:
+                # Fallback to simple hover text if there's an error
+                st.warning(f"Warning: Could not create custom hover text: {e}")
+                hover_texts = None
 
             # Calculate moving averages for different time windows
-            # Only copy if we need to modify, otherwise use view
-            player_data_indexed = player_data_ytd.set_index(date_col)
+            # Copy before setting index to avoid issues
+            try:
+                player_data_indexed = player_data_ytd.copy().set_index(date_col)
+            except Exception as e:
+                st.error(f"Error creating indexed dataframe: {e}")
+                st.stop()
 
             # Define moving average windows and colors
             ma_windows = {
@@ -349,33 +389,38 @@ if date_col:
 
             # Calculate moving averages
             moving_averages = {}
-            for ma_name, (window_size, color) in ma_windows.items():
-                ma_series = (
-                    player_data_indexed["FP"]
-                    .rolling(window=window_size, center=True, min_periods=1)
-                    .mean()
-                )
-                moving_averages[ma_name] = {"values": ma_series.values, "color": color}
+            try:
+                for ma_name, (window_size, color) in ma_windows.items():
+                    ma_series = (
+                        player_data_indexed["FP"]
+                        .rolling(window=window_size, center=True, min_periods=1)
+                        .mean()
+                    )
+                    moving_averages[ma_name] = {"values": ma_series.values, "color": color}
+            except Exception as e:
+                st.warning(f"Warning: Could not calculate all moving averages: {e}")
 
             # Create Plotly figure
             fig = go.Figure()
 
             # Add actual data line (green like Robinhood stock prices)
-            fig.add_trace(
-                go.Scatter(
-                    x=x,
-                    y=y,
-                    mode="lines+markers+text",
-                    name="Fantasy Points",
-                    line={"color": "#00C805", "width": 0.5},  # Robinhood green
-                    marker={"color": "#00C805", "size": 4, "opacity": 0.6},
-                    text=[f"{val:.1f}" for val in y],
-                    textposition="top center",
-                    textfont={"size": 9, "color": "#00C805"},
-                    hovertext=hover_texts,
-                    hovertemplate="%{hovertext}<extra></extra>",
-                )
-            )
+            scatter_kwargs = {
+                "x": x,
+                "y": y,
+                "mode": "lines+markers+text",
+                "name": "Fantasy Points",
+                "line": {"color": "#00C805", "width": 0.5},  # Robinhood green
+                "marker": {"color": "#00C805", "size": 4, "opacity": 0.6},
+                "text": [f"{val:.1f}" for val in y],
+                "textposition": "top center",
+                "textfont": {"size": 9, "color": "#00C805"},
+            }
+            # Only add custom hover if we successfully created it
+            if hover_texts is not None:
+                scatter_kwargs["hovertext"] = hover_texts
+                scatter_kwargs["hovertemplate"] = "%{hovertext}<extra></extra>"
+            
+            fig.add_trace(go.Scatter(**scatter_kwargs))
 
             # Add moving average smoothing lines
             for ma_name, ma_data in moving_averages.items():
