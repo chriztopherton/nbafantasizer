@@ -13,68 +13,18 @@ st.title("Fantasy Points Analyzer")
 st.write("This is a tool to analyze fantasy points for a player over time.")
 
 
-# load data with caching to avoid redownloading on every filter change
-@st.cache_data(ttl=None, show_spinner="Loading dataset from Kaggle (this may take a minute on first load)...")
-def load_and_process_data():
-    """Load and process the Kaggle dataset. This function is cached to avoid redownloading."""
-    try:
-        # Load with low_memory=False to avoid dtype warnings and improve performance
-        df = kagglehub.dataset_load(
-            KaggleDatasetAdapter.PANDAS,
-            "eoinamoore/historical-nba-data-and-player-box-scores",
-            "PlayerStatistics.csv",
-        )
-    except Exception as e:
-        st.error(f"Error loading dataset from Kaggle: {e}")
-        # Return empty dataframe to prevent further errors
-        return pd.DataFrame()
-    
-    # Process in-place where possible to save memory
-    df["player_name"] = df["firstName"] + " " + df["lastName"]
-    
-    if "gameDateTimeEst" in df.columns:
-        # Store raw copy only if needed for fallback
-        df["gameDateTimeEst"] = pd.to_datetime(
-            df["gameDateTimeEst"], format="ISO8601", errors="coerce", utc=True
-        )
-        if df["gameDateTimeEst"].isna().sum() > len(df) * 0.1:
-            # Only create raw copy if we need it for fallback
-            if "gameDateTimeEst_raw" not in df.columns:
-                df["gameDateTimeEst_raw"] = df["gameDateTimeEst"].copy()
-            mask = df["gameDateTimeEst"].isna()
-            df.loc[mask, "gameDateTimeEst"] = pd.to_datetime(
-                df.loc[mask, "gameDateTimeEst_raw"], errors="coerce", utc=True
-            )
-        # Convert to timezone-naive if needed
-        if df["gameDateTimeEst"].dt.tz is not None:
-            df["gameDateTimeEst"] = df["gameDateTimeEst"].dt.tz_localize(None)
-    
-    # Calculate fantasy points
-    df["FP"] = (
-        df["points"] * 1.0  # Points scored
-        + df["reboundsTotal"] * 1.2  # Total rebounds
-        + df["assists"] * 1.5  # Assists
-        + df["blocks"] * 3.0  # Blocked shots
-        + df["steals"] * 3.0  # Steals
-        + df["turnovers"] * -1.0  # Turnovers (negative)
-    )
-    
-    # Add '@' prefix to opponent team name when playing away (home == 0)
-    # Use vectorized operation instead of copying
-    if "home" in df.columns:
-        df["opponent_with_at"] = np.where(
-            df["home"] == 0, "@" + df["opponentteamName"], df["opponentteamName"]
-        )
-    else:
-        df["opponent_with_at"] = df["opponentteamName"]
-    
-    # Create game_loc_date more efficiently
-    df["game_loc_date"] = df["gameDateTimeEst"].astype(str) + " " + df["opponent_with_at"]
 
-    return df
+# Load data and player list
+# result = load_and_process_data()
+# if isinstance(result, tuple):
+#     df_fp, player_list = result
+# else:
+#     # Fallback for backwards compatibility
+#     df_fp = result
+df_fp = pd.read_csv('PlayerStatistics_transformed_post_21.csv')
+# player_list = sorted(df_fp["player_name"].unique()) if len(df_fp) > 0 else []
 
-
-df_fp = load_and_process_data()
+player_list = df_fp.groupby('player_name')['FP'].mean().sort_values(ascending=False).index.tolist()
 
 # Check if data loaded successfully
 if df_fp is None or len(df_fp) == 0:
@@ -93,9 +43,11 @@ if df_fp is None or len(df_fp) == 0:
 
 # player_name = f"{player_first_name} {player_last_name}"
 with st.sidebar:
-    # Get player list - .unique() is fast, so no need for separate caching
-    # The main performance gain is from caching the dataset load
-    player_name = st.selectbox("Select a player", sorted(df_fp["player_name"].unique()))
+    # Use cached player list to avoid repeated .unique() calls
+    if not player_list:
+        st.error("No players found in dataset.")
+        st.stop()
+    player_name = st.selectbox("Select a player", player_list)
 
     # Add date range filters
     col1, col2 = st.columns(2)
@@ -374,7 +326,8 @@ if date_col:
             # Calculate moving averages for different time windows
             # Copy before setting index to avoid issues
             try:
-                player_data_indexed = player_data_ytd.copy().set_index(date_col)
+                # Use a small copy for indexing to save memory
+                player_data_indexed = player_data_ytd[[date_col, "FP"]].copy().set_index(date_col)
             except Exception as e:
                 st.error(f"Error creating indexed dataframe: {e}")
                 st.stop()
@@ -396,9 +349,15 @@ if date_col:
                         .rolling(window=window_size, center=True, min_periods=1)
                         .mean()
                     )
+                    # Store only values and color to minimize memory
                     moving_averages[ma_name] = {"values": ma_series.values, "color": color}
+                # Clean up the indexed dataframe after use
+                del player_data_indexed
             except Exception as e:
                 st.warning(f"Warning: Could not calculate all moving averages: {e}")
+                # Clean up even on error
+                if 'player_data_indexed' in locals():
+                    del player_data_indexed
 
             # Create Plotly figure
             fig = go.Figure()
