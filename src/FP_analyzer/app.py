@@ -8,10 +8,170 @@ import plotly.graph_objects as go
 import streamlit as st
 from injury_scraper import ESPNInjuryScraper
 
-st.set_page_config(layout="wide")
+st.set_page_config(
+    page_title="Fantasy Points Analyzer",
+    page_icon="🏀",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-st.title("Fantasy Points Analyzer")
-st.write("This is a tool to analyze fantasy points for a player over time and evaluate trades.")
+# Custom CSS for fantasy stat tracker look and feel
+st.markdown(
+    """
+    <style>
+    /* Main styling to match fantasy stat tracker */
+    .main .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+
+    /* Header styling */
+    h1 {
+        color: #1A1A1A;
+        font-weight: 600;
+        font-size: 2rem;
+        margin-bottom: 1rem;
+    }
+
+    h2 {
+        color: #1A1A1A;
+        font-weight: 600;
+        font-size: 1.5rem;
+        margin-top: 1.5rem;
+        margin-bottom: 1rem;
+        border-bottom: 2px solid #FF6C37;
+        padding-bottom: 0.5rem;
+    }
+
+    h3 {
+        color: #333333;
+        font-weight: 600;
+        font-size: 1.25rem;
+        margin-top: 1rem;
+    }
+
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {
+        background-color: #F8F9FA;
+    }
+
+    [data-testid="stSidebar"] [data-testid="stHeader"] {
+        background-color: #FFFFFF;
+        color: #FF6C37;
+        font-weight: 600;
+    }
+
+    /* Section headers with orange accent */
+    .section-header {
+        background-color: #FF6C37;
+        color: white;
+        padding: 0.5rem 1rem;
+        border-radius: 4px;
+        font-weight: 600;
+        margin-top: 1rem;
+        margin-bottom: 0.5rem;
+    }
+
+    /* Metric cards */
+    [data-testid="stMetricValue"] {
+        color: #1A1A1A;
+    }
+
+    [data-testid="stMetricLabel"] {
+        color: #666666;
+    }
+
+    /* Button styling */
+    .stButton > button {
+        background-color: #FF6C37;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        font-weight: 500;
+        transition: background-color 0.3s;
+    }
+
+    .stButton > button:hover {
+        background-color: #E55A2E;
+    }
+
+    /* Tab styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        color: #666666;
+        font-weight: 500;
+        padding: 10px 20px;
+        border-radius: 4px 4px 0 0;
+    }
+
+    .stTabs [aria-selected="true"] {
+        background-color: #FF6C37;
+        color: white;
+    }
+
+    /* Dataframe styling */
+    .dataframe {
+        border-radius: 4px;
+        overflow: hidden;
+    }
+
+    /* Info/Alert boxes */
+    .stInfo {
+        background-color: #E3F2FD;
+        border-left: 4px solid #2196F3;
+    }
+
+    .stSuccess {
+        background-color: #E8F5E9;
+        border-left: 4px solid #4CAF50;
+    }
+
+    .stWarning {
+        background-color: #FFF3E0;
+        border-left: 4px solid #FF9800;
+    }
+
+    .stError {
+        background-color: #FFEBEE;
+        border-left: 4px solid #F44336;
+    }
+
+    /* Sidebar selectbox styling */
+    [data-testid="stSidebar"] .stSelectbox label {
+        color: #333333;
+        font-weight: 500;
+    }
+
+    /* Remove Streamlit branding - but keep header for sidebar toggle */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+
+    /* Don't hide the header - we need it for sidebar toggle button */
+    /* Hide only the Streamlit logo/branding, not the entire header */
+    header[data-testid="stHeader"] > div:first-of-type {
+        display: none;
+    }
+
+    /* Ensure sidebar toggle button is always visible - it's usually first child */
+    header[data-testid="stHeader"] button:first-child {
+        visibility: visible !important;
+        display: block !important;
+    }
+
+    /* Ensure sidebar is always visible and properly styled */
+    section[data-testid="stSidebar"] {
+        visibility: visible !important;
+    }
+    </style>
+""",
+    unsafe_allow_html=True,
+)
+
+st.title("🏀 Fantasy Points Analyzer")
+st.markdown("Analyze fantasy points for players over time and evaluate trades.")
 
 
 # Initialize injury scraper (cached)
@@ -21,11 +181,6 @@ def get_injury_scraper():
 
 
 injury_scraper = get_injury_scraper()
-
-# Add button to refresh injury data cache
-if st.sidebar.button("🔄 Refresh Injury Data"):
-    injury_scraper.clear_cache()
-    st.sidebar.success("Injury data cache cleared! Data will refresh on next load.")
 
 # Load data and player list
 # result = load_and_process_data()
@@ -172,13 +327,24 @@ tab1, tab2 = st.tabs(["Player Analysis", "Trade Analyzer"])
 
 # Sidebar configuration
 with st.sidebar:
+    st.markdown('<div class="section-header">⚙️ Configuration</div>', unsafe_allow_html=True)
+
+    # Add button to refresh injury data cache
+    if st.button("🔄 Refresh Injury Data"):
+        injury_scraper.clear_cache()
+        st.success("Injury data cache cleared! Data will refresh on next load.")
+
+    st.markdown("---")
+
     # Player selection (shared across tabs)
     if not player_list:
         st.error("No players found in dataset.")
         st.stop()
 
-    st.header("Player Selection")
-    player_name = st.selectbox("Select a player", player_list, key="player_select_sidebar")
+    st.markdown("**Player Selection**")
+    player_name = st.selectbox(
+        "Select a player", player_list, key="player_select_sidebar", label_visibility="collapsed"
+    )
 
     # Track the last selected player to detect changes
     if "last_selected_player" not in st.session_state:
@@ -197,7 +363,7 @@ with st.sidebar:
             st.session_state.team1_players = [player_name] + st.session_state.team1_players
 
     # Add date range filters (shared across tabs)
-    st.header("Date Range")
+    st.markdown("**Date Range**")
     col1, col2 = st.columns(2)
     with col1:
         start_date_filter = st.date_input(
@@ -205,6 +371,7 @@ with st.sidebar:
             value=datetime(2024, 10, 22).date(),
             min_value=datetime(2015, 1, 1).date(),
             max_value=datetime.now().date(),
+            label_visibility="collapsed",
         )
     with col2:
         end_date_filter = st.date_input(
@@ -212,6 +379,7 @@ with st.sidebar:
             value=datetime.now().date(),
             min_value=datetime(2015, 1, 1).date(),
             max_value=datetime.now().date(),
+            label_visibility="collapsed",
         )
 
     # Validate date range
@@ -430,7 +598,7 @@ with tab1:
                     # Handle edge cases
                     if pd.isna(min_val) or pd.isna(max_val) or min_val == max_val:
                         return pd.Series(
-                            ["color: black; background-color: transparent;"] * len(series),
+                            ["color: #1A1A1A; background-color: transparent;"] * len(series),
                             index=series.index,
                         )
 
@@ -444,7 +612,7 @@ with tab1:
                     styles = []
                     for norm_val in normalized:
                         if pd.isna(norm_val):
-                            styles.append("color: black; background-color: transparent;")
+                            styles.append("color: #1A1A1A; background-color: transparent;")
                         else:
                             rgba = cmap(norm_val)
                             hex_color = mcolors.rgb2hex(rgba[:3])
@@ -455,7 +623,7 @@ with tab1:
                 # Create styled dataframe with text color gradient
                 styled_df = display_df.style.format(format_dict)
 
-                # Apply text color gradient to positive columns
+                # Apply text color gradient to positive columns (darker greens for light theme)
                 for col in columns_to_style:
                     if col in display_df.columns:
                         styled_df = styled_df.apply(
@@ -516,7 +684,7 @@ with tab1:
                 else:
                     win_loss = np.array(["N/A"] * len(player_data_ytd))
 
-                # Create custom hover text - vectorized approach
+                # Create custom hover text - vectorized approach (styled for light theme)
                 hover_texts = [
                     f"<b>Date:</b> {date}<br>"
                     f"<b>Opponent:</b> {opp}<br>"
@@ -540,12 +708,12 @@ with tab1:
                 st.error(f"Error creating indexed dataframe: {e}")
                 st.stop()
 
-            # Define moving average windows and colors
+            # Define moving average windows and colors (optimized for light theme)
             ma_windows = {
-                "7 days": ("7D", "#FF6B6B"),  # Red
-                "14 days": ("14D", "#4ECDC4"),  # Teal
-                "30 days": ("30D", "#45B7D1"),  # Blue
-                "90 days": ("90D", "#FFA07A"),  # Light salmon
+                "7 days": ("7D", "#E74C3C"),  # Red
+                "14 days": ("14D", "#3498DB"),  # Blue
+                "30 days": ("30D", "#9B59B6"),  # Purple
+                "90 days": ("90D", "#F39C12"),  # Orange
             }
 
             # Calculate moving averages
@@ -570,17 +738,17 @@ with tab1:
             # Create Plotly figure
             fig = go.Figure()
 
-            # Add actual data line (green like Robinhood stock prices)
+            # Add actual data line (green for positive performance)
             scatter_kwargs = {
                 "x": x,
                 "y": y,
                 "mode": "lines+markers+text",
                 "name": "Fantasy Points",
-                "line": {"color": "#00C805", "width": 0.5},  # Robinhood green
-                "marker": {"color": "#00C805", "size": 4, "opacity": 0.6},
+                "line": {"color": "#27AE60", "width": 2},  # Green
+                "marker": {"color": "#27AE60", "size": 5, "opacity": 0.7},
                 "text": [f"{val:.1f}" for val in y],
                 "textposition": "top center",
-                "textfont": {"size": 9, "color": "#00C805"},
+                "textfont": {"size": 9, "color": "#27AE60"},
             }
             # Only add custom hover if we successfully created it
             if hover_texts is not None:
@@ -602,46 +770,46 @@ with tab1:
                     )
                 )
 
-            # Update layout with dark background
+            # Update layout with light background
             start_date_str = start_date_filter.strftime("%b %d, %Y")
             end_date_str = end_date_filter.strftime("%b %d, %Y")
             fig.update_layout(
                 title={
                     "text": f"Fantasy Points Over Time: {player_name} ({start_date_str} - {end_date_str})",
-                    "font": {"size": 20, "color": "white"},
+                    "font": {"size": 20, "color": "#1A1A1A"},
                 },
                 xaxis={
                     "title": "Date",
                     "showgrid": True,
-                    "gridcolor": "#333333",
+                    "gridcolor": "#E0E0E0",
                     "gridwidth": 1,
                     "showline": True,
-                    "linecolor": "#555555",
-                    "title_font": {"size": 14, "color": "#cccccc"},
-                    "tickfont": {"color": "#cccccc"},
+                    "linecolor": "#CCCCCC",
+                    "title_font": {"size": 14, "color": "#333333"},
+                    "tickfont": {"color": "#666666"},
                 },
                 yaxis={
                     "title": "Fantasy Points",
                     "showgrid": True,
-                    "gridcolor": "#333333",
+                    "gridcolor": "#E0E0E0",
                     "gridwidth": 1,
                     "showline": True,
-                    "linecolor": "#555555",
-                    "title_font": {"size": 14, "color": "#cccccc"},
-                    "tickfont": {"color": "#cccccc"},
+                    "linecolor": "#CCCCCC",
+                    "title_font": {"size": 14, "color": "#333333"},
+                    "tickfont": {"color": "#666666"},
                 },
                 hovermode="closest",
-                plot_bgcolor="black",
-                paper_bgcolor="black",
+                plot_bgcolor="white",
+                paper_bgcolor="white",
                 legend={
                     "yanchor": "top",
                     "y": 0.99,
                     "xanchor": "left",
                     "x": 0.01,
-                    "bgcolor": "rgba(0, 0, 0, 0.8)",
-                    "bordercolor": "#555555",
+                    "bgcolor": "rgba(255, 255, 255, 0.9)",
+                    "bordercolor": "#E0E0E0",
                     "borderwidth": 1,
-                    "font": {"size": 12, "color": "white"},
+                    "font": {"size": 12, "color": "#1A1A1A"},
                 },
                 margin={"l": 60, "r": 20, "t": 60, "b": 50},
             )
@@ -658,7 +826,7 @@ with tab1:
 # Tab 2: Trade Analyzer
 with tab2:
     st.header("Trade Analyzer")
-    st.write(
+    st.markdown(
         "Compare trade proposals between two teams. Analyze fantasy points, averages, and standard deviations to evaluate trade value."
     )
 
@@ -803,9 +971,9 @@ with tab2:
                 if team1_fp_data or team2_fp_data:
                     fig_box = go.Figure()
 
-                    # Colors for teams
-                    team1_color = "#FF6B6B"  # Red
-                    team2_color = "#4ECDC4"  # Teal
+                    # Colors for teams (optimized for light theme)
+                    team1_color = "#E74C3C"  # Red
+                    team2_color = "#3498DB"  # Blue
 
                     # Add Team 1 players
                     if team1_fp_data:
@@ -865,37 +1033,37 @@ with tab2:
                                 )
                             )
 
-                    # Update layout
+                    # Update layout with light background
                     fig_box.update_layout(
                         title={
                             "text": "Fantasy Points Distribution by Player",
-                            "font": {"size": 18, "color": "white"},
+                            "font": {"size": 18, "color": "#1A1A1A"},
                         },
                         xaxis={
                             "title": "Player",
                             "showgrid": True,
-                            "gridcolor": "#333333",
-                            "title_font": {"size": 14, "color": "#cccccc"},
-                            "tickfont": {"color": "#cccccc"},
+                            "gridcolor": "#E0E0E0",
+                            "title_font": {"size": 14, "color": "#333333"},
+                            "tickfont": {"color": "#666666"},
                         },
                         yaxis={
                             "title": "Fantasy Points",
                             "showgrid": True,
-                            "gridcolor": "#333333",
-                            "title_font": {"size": 14, "color": "#cccccc"},
-                            "tickfont": {"color": "#cccccc"},
+                            "gridcolor": "#E0E0E0",
+                            "title_font": {"size": 14, "color": "#333333"},
+                            "tickfont": {"color": "#666666"},
                         },
-                        plot_bgcolor="black",
-                        paper_bgcolor="black",
+                        plot_bgcolor="white",
+                        paper_bgcolor="white",
                         legend={
                             "yanchor": "top",
                             "y": 0.99,
                             "xanchor": "left",
                             "x": 0.01,
-                            "bgcolor": "rgba(0, 0, 0, 0.8)",
-                            "bordercolor": "#555555",
+                            "bgcolor": "rgba(255, 255, 255, 0.9)",
+                            "bordercolor": "#E0E0E0",
                             "borderwidth": 1,
-                            "font": {"size": 11, "color": "white"},
+                            "font": {"size": 11, "color": "#1A1A1A"},
                         },
                         margin={"l": 60, "r": 20, "t": 60, "b": 100},
                         height=500,
