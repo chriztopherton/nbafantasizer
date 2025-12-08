@@ -149,16 +149,18 @@ st.markdown(
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
 
-    /* Don't hide the header - we need it for sidebar toggle button */
-    /* Hide only the Streamlit logo/branding, not the entire header */
-    header[data-testid="stHeader"] > div:first-of-type {
-        display: none;
+    /* Hide only the Streamlit logo/branding text, not the sidebar toggle button */
+    header[data-testid="stHeader"] a[href*="streamlit"],
+    header[data-testid="stHeader"] img[alt*="Streamlit"],
+    header[data-testid="stHeader"] img[src*="logo"] {
+        display: none !important;
     }
 
-    /* Ensure sidebar toggle button is always visible - it's usually first child */
-    header[data-testid="stHeader"] button:first-child {
+    /* Ensure sidebar toggle button is always visible - target all header buttons */
+    header[data-testid="stHeader"] button {
         visibility: visible !important;
-        display: block !important;
+        display: inline-flex !important;
+        opacity: 1 !important;
     }
 
     /* Ensure sidebar is always visible and properly styled */
