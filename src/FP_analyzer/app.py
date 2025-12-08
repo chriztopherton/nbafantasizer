@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta
 
 import matplotlib.colors as mcolors
@@ -6,7 +7,24 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from dotenv import load_dotenv
 from injury_scraper import ESPNInjuryScraper
+
+# Load environment variables
+load_dotenv()
+
+# Try to import langchain and openai, but make it optional
+LANGCHAIN_AVAILABLE = False
+LANGCHAIN_ERROR = None
+
+try:
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+    from langchain_openai import ChatOpenAI
+
+    LANGCHAIN_AVAILABLE = True
+except ImportError as e:
+    LANGCHAIN_ERROR = str(e)
+    LANGCHAIN_AVAILABLE = False
 
 st.set_page_config(
     page_title="Fantasy Points Analyzer",
@@ -314,6 +332,390 @@ def calculate_player_trade_stats(player_name, df_fp, date_col, start_date, end_d
     return stats
 
 
+# AI Chatbot class for player performance analysis
+class PlayerAnalysisChatbot:
+    """AI chatbot that analyzes player performance for Yahoo Fantasy Basketball managers"""
+
+    def __init__(self):
+        if not LANGCHAIN_AVAILABLE:
+            raise ImportError(
+                "LangChain and OpenAI packages are required. Install with: pip install langchain-openai"
+            )
+
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "OPENAI_API_KEY not found in environment variables. Please set it in your .env file."
+            )
+
+        # Initialize OpenAI client
+        self.llm = ChatOpenAI(
+            model="gpt-3.5-turbo",
+            temperature=0.7,
+            api_key=api_key,
+        )
+
+        # System context for fantasy basketball analysis
+        self.system_context = """You are an expert Yahoo Fantasy Basketball analyst helping managers make informed decisions about player value, trades, and roster management.
+
+Your role is to:
+1. Analyze player performance statistics and game logs
+2. Provide actionable insights for fantasy managers
+3. Evaluate player value in the context of Yahoo Fantasy Basketball scoring
+4. Identify trends, consistency, and potential concerns
+5. Give buy/sell/hold recommendations when appropriate
+
+Format your analysis similar to this structure:
+- Player Profile Note with key performance metrics
+- Key Strengths (consistency, ceiling games, stat diversity)
+- Fantasy Impact (floor, ceiling, matchup-proof status)
+- Buy/Sell/Hold Recommendation
+- Notes for Managers (expectations, usage, roster fit)
+
+Be specific with numbers, cite recent performance, and provide context for fantasy managers."""
+
+        # Initialize conversation history (manual memory management for langchain 1.x compatibility)
+        self.chat_history = []
+
+    def generate_player_summary(self, player_name, player_data, aggregated_stats, injury_info=None):
+        """Generate a comprehensive player performance summary"""
+        if not LANGCHAIN_AVAILABLE:
+            return "AI analysis requires langchain-openai package. Install with: pip install langchain-openai"
+
+        try:
+            # Prepare player statistics summary
+            recent_games = player_data.tail(22) if len(player_data) >= 22 else player_data
+
+            # Calculate key metrics
+            avg_fp = recent_games["FP"].mean()
+            std_fp = recent_games["FP"].std()
+            min_fp = recent_games["FP"].min()
+            max_fp = recent_games["FP"].max()
+            median_fp = recent_games["FP"].median()
+
+            # Count games under certain thresholds
+            games_under_50 = (recent_games["FP"] < 50).sum()
+            games_over_60 = (recent_games["FP"] >= 60).sum()
+            games_over_70 = (recent_games["FP"] >= 70).sum()
+
+            # Get top performances
+            top_games = recent_games.nlargest(3, "FP")[
+                ["FP", "points", "reboundsTotal", "assists", "steals", "blocks"]
+            ]
+
+            # Calculate averages for key stats
+            avg_points = recent_games["points"].mean()
+            avg_rebounds = recent_games["reboundsTotal"].mean()
+            avg_assists = recent_games["assists"].mean()
+            avg_steals = recent_games["steals"].mean()
+            avg_blocks = recent_games["blocks"].mean()
+            avg_minutes = (
+                recent_games["numMinutes"].mean() if "numMinutes" in recent_games.columns else None
+            )
+
+            # Build statistics summary text
+            stats_summary = f"""
+Player: {player_name}
+Games Analyzed: {len(recent_games)} games
+
+Fantasy Points Statistics:
+- Average FP: {avg_fp:.1f}
+- Median FP: {median_fp:.1f}
+- Standard Deviation: {std_fp:.1f}
+- Min FP: {min_fp:.1f}
+- Max FP: {max_fp:.1f}
+- Games under 50 FP: {games_under_50}
+- Games 60+ FP: {games_over_60}
+- Games 70+ FP: {games_over_70}
+
+Key Statistical Averages:
+- Points: {avg_points:.1f}
+- Rebounds: {avg_rebounds:.1f}
+- Assists: {avg_assists:.1f}
+- Steals: {avg_steals:.1f}
+- Blocks: {avg_blocks:.1f}
+"""
+
+            if avg_minutes:
+                stats_summary += f"- Minutes: {avg_minutes:.1f}\n"
+
+            stats_summary += "\nTop 3 Performances:\n"
+            for idx, (_, game) in enumerate(top_games.iterrows(), 1):
+                stats_summary += f"{idx}. {game['FP']:.1f} FP ({game['points']:.0f} pts, {game['reboundsTotal']:.0f} reb, {game['assists']:.0f} ast)\n"
+
+            # Add injury information if available
+            if injury_info:
+                stats_summary += f"\nInjury Status: {injury_info.get('status', 'Unknown')}\n"
+                if injury_info.get("comment"):
+                    stats_summary += f"Injury Details: {injury_info.get('comment')}\n"
+
+            # Add aggregated stats by time window if available
+            if aggregated_stats is not None and len(aggregated_stats) > 0:
+                stats_summary += "\nAggregated Averages by Time Window:\n"
+                for _, row in aggregated_stats.iterrows():
+                    stats_summary += f"- {row['Time Window']}: {row['Fantasy Points']:.1f} FP\n"
+
+            # Create the prompt for the AI
+            analysis_prompt = f"""Analyze the following player statistics and provide a comprehensive fantasy basketball analysis for Yahoo Fantasy managers.
+
+{stats_summary}
+
+Please provide:
+1. A Player Profile Note summarizing their current performance level
+2. Key Strengths (consistency, ceiling games, stat diversity, usage)
+3. Fantasy Impact (floor, ceiling, matchup-proof status, roster value)
+4. Buy/Sell/Hold Recommendation with reasoning
+5. Notes for Managers (what to expect, usage patterns, roster fit considerations)
+
+Format your response in a clear, actionable way that helps fantasy managers make informed decisions."""
+
+            # Build messages with system context and analysis prompt
+            messages = [
+                SystemMessage(content=self.system_context),
+                HumanMessage(content=analysis_prompt),
+            ]
+
+            # Get response from LLM
+            response = self.llm.invoke(messages)
+
+            # Extract content from response
+            if hasattr(response, "content"):
+                response_text = response.content
+            elif isinstance(response, str):
+                response_text = response
+            else:
+                response_text = str(response)
+
+            return response_text.strip()
+
+        except Exception as e:
+            return f"Error generating player summary: {str(e)}"
+
+    def get_response(self, user_input):
+        """Generate AI-powered response using LangChain and OpenAI"""
+        if not LANGCHAIN_AVAILABLE:
+            return "AI analysis requires langchain-openai package. Install with: pip install langchain-openai"
+
+        try:
+            # Build messages list with system context, chat history, and new user input
+            messages = [SystemMessage(content=self.system_context)]
+
+            # Add chat history
+            for msg in self.chat_history:
+                messages.append(msg)
+
+            # Add current user input
+            messages.append(HumanMessage(content=user_input))
+
+            # Get response from LLM
+            response = self.llm.invoke(messages)
+
+            # Extract content from response (handles different response formats)
+            if hasattr(response, "content"):
+                response_text = response.content
+            elif isinstance(response, str):
+                response_text = response
+            else:
+                response_text = str(response)
+
+            # Update chat history
+            self.chat_history.append(HumanMessage(content=user_input))
+            self.chat_history.append(AIMessage(content=response_text))
+
+            # Keep only last 10 exchanges to avoid token limits
+            if len(self.chat_history) > 20:
+                self.chat_history = self.chat_history[-20:]
+
+            return response_text.strip()
+        except Exception as e:
+            return f"Error generating response: {str(e)}"
+
+    def generate_trade_analysis(
+        self,
+        team1_stats,
+        team2_stats,
+        team1_players,
+        team2_players,
+        team1_total_avg,
+        team2_total_avg,
+        team1_total_std,
+        team2_total_std,
+        injury_scraper=None,
+    ):
+        """Generate comprehensive AI-powered trade analysis comparing both teams"""
+        if not LANGCHAIN_AVAILABLE:
+            return "AI analysis requires langchain-openai package. Install with: pip install langchain-openai"
+
+        try:
+            # Build detailed trade summary
+            trade_summary = """
+TRADE PROPOSAL ANALYSIS
+
+TEAM 1 - Players to Trade Away:
+"""
+            for i, stats in enumerate(team1_stats, 1):
+                # Get injury info if available
+                injury_info = None
+                if injury_scraper:
+                    try:
+                        injury_info = injury_scraper.get_player_injury(stats["player_name"])
+                    except Exception:
+                        pass
+
+                trade_summary += f"""
+{i}. {stats['player_name']}:
+   - Average FP: {stats['avg_fp']:.2f}
+   - Std Dev: {stats['std_fp']:.2f}
+   - Total FP: {stats['total_fp']:.2f}
+   - Games Played: {stats['games_played']}
+   - Min FP: {stats['min_fp']:.2f}
+   - Max FP: {stats['max_fp']:.2f}
+   - Median FP: {stats['median_fp']:.2f}"""
+                if injury_info:
+                    trade_summary += f"\n   - Injury Status: {injury_info.get('status', 'Unknown')}"
+                    if injury_info.get("comment"):
+                        trade_summary += (
+                            f"\n   - Injury Details: {injury_info.get('comment')[:100]}"
+                        )
+
+            trade_summary += f"""
+
+TEAM 1 TOTALS:
+- Total Average FP: {team1_total_avg:.2f}
+- Combined Std Dev: {team1_total_std:.2f}
+- Total Games: {sum(s['games_played'] for s in team1_stats) if team1_stats else 0}
+
+TEAM 2 - Players to Trade For:
+"""
+            for i, stats in enumerate(team2_stats, 1):
+                # Get injury info if available
+                injury_info = None
+                if injury_scraper:
+                    try:
+                        injury_info = injury_scraper.get_player_injury(stats["player_name"])
+                    except Exception:
+                        pass
+
+                trade_summary += f"""
+{i}. {stats['player_name']}:
+   - Average FP: {stats['avg_fp']:.2f}
+   - Std Dev: {stats['std_fp']:.2f}
+   - Total FP: {stats['total_fp']:.2f}
+   - Games Played: {stats['games_played']}
+   - Min FP: {stats['min_fp']:.2f}
+   - Max FP: {stats['max_fp']:.2f}
+   - Median FP: {stats['median_fp']:.2f}"""
+                if injury_info:
+                    trade_summary += f"\n   - Injury Status: {injury_info.get('status', 'Unknown')}"
+                    if injury_info.get("comment"):
+                        trade_summary += (
+                            f"\n   - Injury Details: {injury_info.get('comment')[:100]}"
+                        )
+
+            trade_summary += f"""
+
+TEAM 2 TOTALS:
+- Total Average FP: {team2_total_avg:.2f}
+- Combined Std Dev: {team2_total_std:.2f}
+- Total Games: {sum(s['games_played'] for s in team2_stats) if team2_stats else 0}
+
+TRADE COMPARISON:
+- FP Difference (Team 1 - Team 2): {team1_total_avg - team2_total_avg:.2f}
+- FP Difference Percentage: {((team1_total_avg - team2_total_avg) / max(team1_total_avg, team2_total_avg) * 100) if max(team1_total_avg, team2_total_avg) > 0 else 0:.2f}%
+"""
+
+            # Calculate additional metrics
+            if team1_stats:
+                team1_avg_std = np.mean([s["std_fp"] for s in team1_stats])
+                team1_best = max(team1_stats, key=lambda x: x["avg_fp"])
+                team1_worst = min(team1_stats, key=lambda x: x["avg_fp"])
+                trade_summary += f"""
+TEAM 1 DETAILS:
+- Average Consistency (Std Dev): {team1_avg_std:.2f}
+- Best Player: {team1_best['player_name']} ({team1_best['avg_fp']:.2f} FP/game)
+- Worst Player: {team1_worst['player_name']} ({team1_worst['avg_fp']:.2f} FP/game)
+"""
+
+            if team2_stats:
+                team2_avg_std = np.mean([s["std_fp"] for s in team2_stats])
+                team2_best = max(team2_stats, key=lambda x: x["avg_fp"])
+                team2_worst = min(team2_stats, key=lambda x: x["avg_fp"])
+                trade_summary += f"""
+TEAM 2 DETAILS:
+- Average Consistency (Std Dev): {team2_avg_std:.2f}
+- Best Player: {team2_best['player_name']} ({team2_best['avg_fp']:.2f} FP/game)
+- Worst Player: {team2_worst['player_name']} ({team2_worst['avg_fp']:.2f} FP/game)
+"""
+
+            # Create the prompt for the AI
+            analysis_prompt = f"""You are an expert Yahoo Fantasy Basketball trade analyst. Analyze the following trade proposal and provide a comprehensive assessment.
+
+{trade_summary}
+
+Please provide a detailed trade analysis that includes:
+
+1. **Trade Value Assessment**: Compare the overall value of both sides. Is this trade fair, or does one side have a clear advantage?
+
+2. **Team 1 Strengths & Weaknesses**:
+   - What are the strengths of the players Team 1 is giving up?
+   - What are the weaknesses or concerns?
+   - Who is the best/worst player in this package?
+
+3. **Team 2 Strengths & Weaknesses**:
+   - What are the strengths of the players Team 2 is giving up?
+   - What are the weaknesses or concerns?
+   - Who is the best/worst player in this package?
+
+4. **Consistency Analysis**: Compare the consistency (standard deviation) of both sides. Which side has more reliable players?
+
+5. **Risk Assessment**: Identify any risks for either side (injuries, sample size, volatility, etc.)
+
+6. **Strategic Considerations**:
+   - Which side benefits more from this trade?
+   - What roster needs might this trade address?
+   - Are there any positional or statistical category implications?
+
+7. **Final Recommendation**: Should Team 1 accept, reject, or counter this trade? Provide clear reasoning.
+
+Format your response in a clear, structured way that helps fantasy managers make informed decisions. Be specific with numbers and cite the statistics provided."""
+
+            # Build messages with system context and analysis prompt
+            trade_system_context = """You are an expert Yahoo Fantasy Basketball trade analyst with deep knowledge of player value, roster construction, and fantasy strategy.
+
+Your role is to:
+1. Objectively compare trade proposals between two teams
+2. Assess the strengths and weaknesses of each side
+3. Evaluate consistency, risk, and strategic value
+4. Provide actionable recommendations for fantasy managers
+
+Be analytical, specific with numbers, and help managers understand not just whether a trade is fair, but WHY and what factors to consider."""
+
+            messages = [
+                SystemMessage(content=trade_system_context),
+                HumanMessage(content=analysis_prompt),
+            ]
+
+            # Get response from LLM
+            response = self.llm.invoke(messages)
+
+            # Extract content from response
+            if hasattr(response, "content"):
+                response_text = response.content
+            elif isinstance(response, str):
+                response_text = response
+            else:
+                response_text = str(response)
+
+            return response_text.strip()
+
+        except Exception as e:
+            return f"Error generating trade analysis: {str(e)}"
+
+    def clear_memory(self):
+        """Clear conversation memory"""
+        self.chat_history = []
+
+
 # display data
 # st.dataframe(df_fp)
 
@@ -503,7 +905,7 @@ with tab1:
 
                 st.error(f"Error details: {traceback.format_exc()}")
 
-            game_log, stats = st.tabs(["Game Log", "Stats"])
+            game_log, ai_analysis = st.tabs(["Game Log", "🤖 AI Analysis (beta)"])
             with game_log:
                 st.subheader("Game Log")
                 # Prepare dataframe for display - copy to avoid modification issues
@@ -644,14 +1046,181 @@ with tab1:
 
                 st.dataframe(styled_df, width="stretch")
                 # st.dataframe(player_data_ytd, use_container_width=True)
-            with stats:
-                st.subheader("Stats")
+                # with stats:
+                # st.subheader("Stats")
                 # st.dataframe(player_data_ytd, use_container_width=True)
 
                 # Display aggregated averages as a single table
-                st.subheader("Aggregated Averages by Time Window")
+                st.subheader("Averages")
                 if len(aggregated_df) > 0:
                     st.dataframe(aggregated_df, width="stretch")
+
+            with ai_analysis:
+                st.subheader("🤖 AI Player Performance Analysis")
+                st.markdown(
+                    "Get AI-powered insights about this player's performance and fantasy value for Yahoo Fantasy Basketball managers."
+                )
+
+                # Check if AI is available
+                if not LANGCHAIN_AVAILABLE:
+                    import sys
+
+                    python_path = sys.executable
+                    venv_detected = "venv" in python_path or ".venv" in python_path
+
+                    st.warning(
+                        "⚠️ AI analysis requires additional packages. Install with: `pip install langchain-openai langchain`"
+                    )
+
+                    if LANGCHAIN_ERROR:
+                        with st.expander("🔍 Debug Information"):
+                            st.code(f"Import Error: {LANGCHAIN_ERROR}", language="text")
+                            st.code(f"Python Path: {python_path}", language="text")
+                            st.code(f"Virtual Env Detected: {venv_detected}", language="text")
+
+                    if not venv_detected:
+                        st.error(
+                            "🔴 **Virtual Environment Not Active!**\n\n"
+                            "It looks like you have a `venv` directory with the packages installed, but Streamlit is running "
+                            "with a different Python interpreter. Please:\n\n"
+                            "1. Activate your virtual environment:\n"
+                            "   ```bash\n"
+                            "   source venv/bin/activate  # On macOS/Linux\n"
+                            "   # or\n"
+                            "   venv\\Scripts\\activate  # On Windows\n"
+                            "   ```\n\n"
+                            "2. Then run Streamlit again:\n"
+                            "   ```bash\n"
+                            "   streamlit run src/FP_analyzer/app.py\n"
+                            "   ```"
+                        )
+                    else:
+                        st.info(
+                            "Once installed, set your `OPENAI_API_KEY` in your `.env` file to enable AI analysis."
+                        )
+                else:
+                    # Initialize chatbot in session state
+                    # Check if chatbot exists and is valid (has new structure without 'chain')
+                    needs_reinit = False
+                    if "player_chatbot" not in st.session_state:
+                        needs_reinit = True
+                    elif hasattr(st.session_state.player_chatbot, "chain"):
+                        # Old version with 'chain' attribute - needs reinitialization
+                        needs_reinit = True
+                        st.info("🔄 Updating AI chatbot to new version...")
+                    elif not hasattr(st.session_state.player_chatbot, "llm"):
+                        # Missing required attributes - needs reinitialization
+                        needs_reinit = True
+
+                    if needs_reinit:
+                        try:
+                            st.session_state.player_chatbot = PlayerAnalysisChatbot()
+                            if "ai_chat_messages" not in st.session_state:
+                                st.session_state.ai_chat_messages = []
+                        except ValueError as e:
+                            st.error(f"❌ Configuration Error: {str(e)}")
+                            st.info(
+                                "Please set your `OPENAI_API_KEY` in your `.env` file to enable AI analysis."
+                            )
+                            st.stop()
+                        except Exception as e:
+                            st.error(f"❌ Error initializing AI chatbot: {str(e)}")
+                            st.stop()
+
+                    # Get injury info for the summary
+                    try:
+                        injury_info = injury_scraper.get_player_injury(player_name)
+                    except Exception:
+                        injury_info = None
+
+                    # Generate summary button
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        if st.button(
+                            "📊 Generate Player Performance Summary",
+                            type="primary",
+                            use_container_width=True,
+                        ):
+                            with st.spinner("🤖 Analyzing player performance..."):
+                                summary = st.session_state.player_chatbot.generate_player_summary(
+                                    player_name=player_name,
+                                    player_data=player_data_ytd,
+                                    aggregated_stats=aggregated_df,
+                                    injury_info=injury_info,
+                                )
+                                # Store summary in session state
+                                st.session_state.player_summary = summary
+                                st.session_state.summary_generated = True
+
+                    with col2:
+                        if st.button("🔄 Clear Chat", use_container_width=True):
+                            st.session_state.ai_chat_messages = []
+                            st.session_state.player_chatbot.clear_memory()
+                            if "player_summary" in st.session_state:
+                                del st.session_state.player_summary
+                            if "summary_generated" in st.session_state:
+                                del st.session_state.summary_generated
+                            st.rerun()
+
+                    # Display summary if generated
+                    if (
+                        "summary_generated" in st.session_state
+                        and st.session_state.summary_generated
+                    ):
+                        if "player_summary" in st.session_state:
+                            st.markdown("---")
+                            st.markdown("### 📝 Player Performance Summary")
+                            st.markdown(st.session_state.player_summary)
+
+                    # Chat interface for follow-up questions
+                    st.markdown("---")
+                    st.markdown("### 💬 Ask Follow-up Questions")
+
+                    # Display chat messages
+                    for message in st.session_state.ai_chat_messages:
+                        if message["role"] == "user":
+                            with st.chat_message("user"):
+                                st.write(message["content"])
+                        else:
+                            with st.chat_message("assistant"):
+                                st.write(message["content"])
+
+                    # Chat input
+                    if prompt := st.chat_input(
+                        f"Ask about {player_name}'s fantasy value, trends, or trade advice..."
+                    ):
+                        # Add user message to history
+                        st.session_state.ai_chat_messages.append(
+                            {"role": "user", "content": prompt}
+                        )
+
+                        # Show typing indicator
+                        with st.chat_message("assistant"):
+                            with st.spinner("Thinking..."):
+                                # Add context about the current player
+                                contextual_prompt = (
+                                    f"Context: We're analyzing {player_name}. {prompt}"
+                                )
+                                bot_response = st.session_state.player_chatbot.get_response(
+                                    contextual_prompt
+                                )
+                                st.session_state.ai_chat_messages.append(
+                                    {"role": "assistant", "content": bot_response}
+                                )
+
+                        # Rerun to display new messages
+                        st.rerun()
+
+                    # Helpful suggestions
+                    st.markdown("---")
+                    st.markdown("**💡 Try asking:**")
+                    st.markdown(f"- What's {player_name}'s consistency like?")
+                    st.markdown(f"- Should I buy, sell, or hold {player_name}?")
+                    st.markdown(f"- What's {player_name}'s fantasy ceiling and floor?")
+                    st.markdown(
+                        f"- How does {player_name} compare to other players at their position?"
+                    )
+                    st.markdown(f"- What are the concerns about {player_name}'s performance?")
 
             # Use YTD data for the main chart
             x = player_data_ytd[date_col].values
@@ -880,10 +1449,6 @@ with tab2:
                     st.warning(f"⚠️ No data found for {player} in the selected date range.")
 
             if team1_stats or team2_stats:
-                # Create comparison report
-                st.markdown("---")
-                st.subheader("Trade Analysis Report")
-
                 # Calculate totals
                 team1_total_avg = sum(s["avg_fp"] for s in team1_stats) if team1_stats else 0
                 team2_total_avg = sum(s["avg_fp"] for s in team2_stats) if team2_stats else 0
@@ -898,321 +1463,494 @@ with tab2:
                 team1_total_fp = sum(s["total_fp"] for s in team1_stats) if team1_stats else 0
                 team2_total_fp = sum(s["total_fp"] for s in team2_stats) if team2_stats else 0
 
-                # Display summary metrics
-                metric_col1, metric_col2, metric_col3 = st.columns(3)
-                with metric_col1:
-                    st.metric("Team 1 Avg FP", f"{team1_total_avg:.2f}")
-                    st.metric("Team 1 Total FP", f"{team1_total_fp:.2f}")
-                with metric_col2:
-                    st.metric("Team 2 Avg FP", f"{team2_total_avg:.2f}")
-                    st.metric("Team 2 Total FP", f"{team2_total_fp:.2f}")
-                with metric_col3:
-                    diff = team1_total_avg - team2_total_avg
-                    st.metric("Difference (Team 1 - Team 2)", f"{diff:.2f}", delta=f"{diff:.2f}")
+                # Store all calculated values in session state for persistence
+                st.session_state.current_team1_stats = team1_stats
+                st.session_state.current_team2_stats = team2_stats
+                st.session_state.current_team1_players = team1_players
+                st.session_state.current_team2_players = team2_players
+                st.session_state.current_team1_total_avg = team1_total_avg
+                st.session_state.current_team2_total_avg = team2_total_avg
+                st.session_state.current_team1_total_std = team1_total_std
+                st.session_state.current_team2_total_std = team2_total_std
+                st.session_state.current_team1_total_fp = team1_total_fp
+                st.session_state.current_team2_total_fp = team2_total_fp
+                st.session_state.trade_analyzed = True
 
-                # Detailed player breakdown
-                st.markdown("---")
-                st.subheader("Player Breakdown")
+                # Clear old AI analysis when new trade is analyzed
+                if "trade_analysis" in st.session_state:
+                    del st.session_state.trade_analysis
+                if "trade_analysis_generated" in st.session_state:
+                    del st.session_state.trade_analysis_generated
+                if "trade_chat_messages" in st.session_state:
+                    del st.session_state.trade_chat_messages
 
-                breakdown_col1, breakdown_col2 = st.columns(2)
+    # Display trade analysis if it exists in session state
+    if "trade_analyzed" in st.session_state and st.session_state.trade_analyzed:
+        # Retrieve from session state
+        team1_stats = st.session_state.get("current_team1_stats", [])
+        team2_stats = st.session_state.get("current_team2_stats", [])
+        team1_players = st.session_state.get("current_team1_players", [])
+        team2_players = st.session_state.get("current_team2_players", [])
+        team1_total_avg = st.session_state.get("current_team1_total_avg", 0)
+        team2_total_avg = st.session_state.get("current_team2_total_avg", 0)
+        team1_total_std = st.session_state.get("current_team1_total_std", 0)
+        team2_total_std = st.session_state.get("current_team2_total_std", 0)
+        team1_total_fp = st.session_state.get("current_team1_total_fp", 0)
+        team2_total_fp = st.session_state.get("current_team2_total_fp", 0)
 
-                with breakdown_col1:
-                    st.write("**Team 1 Players:**")
-                    if team1_stats:
-                        team1_df = pd.DataFrame(team1_stats)
-                        team1_df = team1_df.round(2)
-                        st.dataframe(
-                            team1_df[
-                                ["player_name", "avg_fp", "std_fp", "total_fp", "games_played"]
-                            ],
-                            use_container_width=True,
+        if team1_stats or team2_stats:
+            # Create comparison report
+            st.markdown("---")
+            st.subheader("Trade Analysis Report")
+
+            # Display summary metrics
+            metric_col1, metric_col2, metric_col3 = st.columns(3)
+            with metric_col1:
+                st.metric("Team 1 Avg FP", f"{team1_total_avg:.2f}")
+                st.metric("Team 1 Total FP", f"{team1_total_fp:.2f}")
+            with metric_col2:
+                st.metric("Team 2 Avg FP", f"{team2_total_avg:.2f}")
+                st.metric("Team 2 Total FP", f"{team2_total_fp:.2f}")
+            with metric_col3:
+                diff = team1_total_avg - team2_total_avg
+                st.metric("Difference (Team 1 - Team 2)", f"{diff:.2f}", delta=f"{diff:.2f}")
+
+            # Detailed player breakdown
+            st.markdown("---")
+            st.subheader("Player Breakdown")
+
+            breakdown_col1, breakdown_col2 = st.columns(2)
+
+            with breakdown_col1:
+                st.write("**Team 1 Players:**")
+                if team1_stats:
+                    team1_df = pd.DataFrame(team1_stats)
+                    team1_df = team1_df.round(2)
+                    st.dataframe(
+                        team1_df[["player_name", "avg_fp", "std_fp", "total_fp", "games_played"]],
+                        use_container_width=True,
+                    )
+                else:
+                    st.write("No players selected")
+
+            with breakdown_col2:
+                st.write("**Team 2 Players:**")
+                if team2_stats:
+                    team2_df = pd.DataFrame(team2_stats)
+                    team2_df = team2_df.round(2)
+                    st.dataframe(
+                        team2_df[["player_name", "avg_fp", "std_fp", "total_fp", "games_played"]],
+                        use_container_width=True,
+                    )
+                else:
+                    st.write("No players selected")
+
+            # Box plot visualization
+            st.markdown("---")
+            st.subheader("Fantasy Points Distribution (Box Plot)")
+            st.write(
+                "Compare the distribution of fantasy points for each player. Box plots show quartiles, median, mean, and outliers."
+            )
+
+            # Collect FP data for all players
+            team1_fp_data = {}
+            team2_fp_data = {}
+
+            for player in team1_players:
+                fp_values = get_player_fp_data(
+                    player, df_fp, date_col_trade, start_date_filter, end_date_filter
+                )
+                if fp_values is not None and len(fp_values) > 0:
+                    team1_fp_data[player] = fp_values
+
+            for player in team2_players:
+                fp_values = get_player_fp_data(
+                    player, df_fp, date_col_trade, start_date_filter, end_date_filter
+                )
+                if fp_values is not None and len(fp_values) > 0:
+                    team2_fp_data[player] = fp_values
+
+            # Create box plot if we have data
+            if team1_fp_data or team2_fp_data:
+                fig_box = go.Figure()
+
+                # Colors for teams (optimized for light theme)
+                team1_color = "#E74C3C"  # Red
+                team2_color = "#3498DB"  # Blue
+
+                # Add Team 1 players
+                if team1_fp_data:
+                    for player, fp_values in team1_fp_data.items():
+                        # Calculate statistics for annotation
+                        mean_fp = np.mean(fp_values)
+                        median_fp = np.median(fp_values)
+
+                        fig_box.add_trace(
+                            go.Box(
+                                y=fp_values,
+                                name=player,
+                                boxmean="sd",  # Show mean and standard deviation
+                                boxpoints="outliers",  # Show outliers
+                                marker_color=team1_color,
+                                marker_opacity=0.7,
+                                line_color=team1_color,
+                                fillcolor="rgba(255, 107, 107, 0.3)",
+                                hovertemplate=f"<b>{player}</b> (Team 1)<br>"
+                                + "Q1: %{{q1:.2f}}<br>"
+                                + "Median: %{{median:.2f}}<br>"
+                                + "Q3: %{{q3:.2f}}<br>"
+                                + "Mean: "
+                                + f"{mean_fp:.2f}<br>"
+                                + "Min: %{{lowerfence:.2f}}<br>"
+                                + "Max: %{{upperfence:.2f}}<br>"
+                                + "<extra></extra>",
+                            )
                         )
-                    else:
-                        st.write("No players selected")
 
-                with breakdown_col2:
-                    st.write("**Team 2 Players:**")
-                    if team2_stats:
-                        team2_df = pd.DataFrame(team2_stats)
-                        team2_df = team2_df.round(2)
-                        st.dataframe(
-                            team2_df[
-                                ["player_name", "avg_fp", "std_fp", "total_fp", "games_played"]
-                            ],
-                            use_container_width=True,
+                # Add Team 2 players
+                if team2_fp_data:
+                    for player, fp_values in team2_fp_data.items():
+                        # Calculate statistics for annotation
+                        mean_fp = np.mean(fp_values)
+                        median_fp = np.median(fp_values)
+
+                        fig_box.add_trace(
+                            go.Box(
+                                y=fp_values,
+                                name=player,
+                                boxmean="sd",  # Show mean and standard deviation
+                                boxpoints="outliers",  # Show outliers
+                                marker_color=team2_color,
+                                marker_opacity=0.7,
+                                line_color=team2_color,
+                                fillcolor="rgba(78, 205, 196, 0.3)",
+                                hovertemplate=f"<b>{player}</b> (Team 2)<br>"
+                                + "Q1: %{{q1:.2f}}<br>"
+                                + "Median: %{{median:.2f}}<br>"
+                                + "Q3: %{{q3:.2f}}<br>"
+                                + "Mean: "
+                                + f"{mean_fp:.2f}<br>"
+                                + "Min: %{{lowerfence:.2f}}<br>"
+                                + "Max: %{{upperfence:.2f}}<br>"
+                                + "<extra></extra>",
+                            )
                         )
-                    else:
-                        st.write("No players selected")
 
-                # Box plot visualization
-                st.markdown("---")
-                st.subheader("Fantasy Points Distribution (Box Plot)")
-                st.write(
-                    "Compare the distribution of fantasy points for each player. Box plots show quartiles, median, mean, and outliers."
+                # Update layout with light background
+                fig_box.update_layout(
+                    title={
+                        "text": "Fantasy Points Distribution by Player",
+                        "font": {"size": 18, "color": "#1A1A1A"},
+                    },
+                    xaxis={
+                        "title": "Player",
+                        "showgrid": True,
+                        "gridcolor": "#E0E0E0",
+                        "title_font": {"size": 14, "color": "#333333"},
+                        "tickfont": {"color": "#666666"},
+                    },
+                    yaxis={
+                        "title": "Fantasy Points",
+                        "showgrid": True,
+                        "gridcolor": "#E0E0E0",
+                        "title_font": {"size": 14, "color": "#333333"},
+                        "tickfont": {"color": "#666666"},
+                    },
+                    plot_bgcolor="white",
+                    paper_bgcolor="white",
+                    legend={
+                        "yanchor": "top",
+                        "y": 0.99,
+                        "xanchor": "left",
+                        "x": 0.01,
+                        "bgcolor": "rgba(255, 255, 255, 0.9)",
+                        "bordercolor": "#E0E0E0",
+                        "borderwidth": 1,
+                        "font": {"size": 11, "color": "#1A1A1A"},
+                    },
+                    margin={"l": 60, "r": 20, "t": 60, "b": 100},
+                    height=500,
                 )
 
-                # Collect FP data for all players
-                team1_fp_data = {}
-                team2_fp_data = {}
+                # Rotate x-axis labels for better readability
+                fig_box.update_xaxes(tickangle=-45)
 
-                for player in team1_players:
-                    fp_values = get_player_fp_data(
-                        player, df_fp, date_col_trade, start_date_filter, end_date_filter
-                    )
-                    if fp_values is not None and len(fp_values) > 0:
-                        team1_fp_data[player] = fp_values
+                st.plotly_chart(fig_box, use_container_width=True)
 
-                for player in team2_players:
-                    fp_values = get_player_fp_data(
-                        player, df_fp, date_col_trade, start_date_filter, end_date_filter
-                    )
-                    if fp_values is not None and len(fp_values) > 0:
-                        team2_fp_data[player] = fp_values
+                # Add explanation
+                st.caption(
+                    "📊 **Box Plot Guide:** The box shows quartiles (Q1, median, Q3). The whiskers extend to min/max values within 1.5×IQR. Points outside are outliers. The mean is shown as a dashed line."
+                )
+            else:
+                st.info(
+                    "No fantasy points data available for the selected players in the chosen date range."
+                )
 
-                # Create box plot if we have data
-                if team1_fp_data or team2_fp_data:
-                    fig_box = go.Figure()
+            # Trade rating
+            st.markdown("---")
+            st.subheader("Trade Rating")
 
-                    # Colors for teams (optimized for light theme)
-                    team1_color = "#E74C3C"  # Red
-                    team2_color = "#3498DB"  # Blue
+            # Calculate rating based on multiple factors
+            rating_score = 0
+            rating_factors = []
 
-                    # Add Team 1 players
-                    if team1_fp_data:
-                        for player, fp_values in team1_fp_data.items():
-                            # Calculate statistics for annotation
-                            mean_fp = np.mean(fp_values)
-                            median_fp = np.median(fp_values)
-
-                            fig_box.add_trace(
-                                go.Box(
-                                    y=fp_values,
-                                    name=player,
-                                    boxmean="sd",  # Show mean and standard deviation
-                                    boxpoints="outliers",  # Show outliers
-                                    marker_color=team1_color,
-                                    marker_opacity=0.7,
-                                    line_color=team1_color,
-                                    fillcolor="rgba(255, 107, 107, 0.3)",
-                                    hovertemplate=f"<b>{player}</b> (Team 1)<br>"
-                                    + "Q1: %{{q1:.2f}}<br>"
-                                    + "Median: %{{median:.2f}}<br>"
-                                    + "Q3: %{{q3:.2f}}<br>"
-                                    + "Mean: "
-                                    + f"{mean_fp:.2f}<br>"
-                                    + "Min: %{{lowerfence:.2f}}<br>"
-                                    + "Max: %{{upperfence:.2f}}<br>"
-                                    + "<extra></extra>",
-                                )
-                            )
-
-                    # Add Team 2 players
-                    if team2_fp_data:
-                        for player, fp_values in team2_fp_data.items():
-                            # Calculate statistics for annotation
-                            mean_fp = np.mean(fp_values)
-                            median_fp = np.median(fp_values)
-
-                            fig_box.add_trace(
-                                go.Box(
-                                    y=fp_values,
-                                    name=player,
-                                    boxmean="sd",  # Show mean and standard deviation
-                                    boxpoints="outliers",  # Show outliers
-                                    marker_color=team2_color,
-                                    marker_opacity=0.7,
-                                    line_color=team2_color,
-                                    fillcolor="rgba(78, 205, 196, 0.3)",
-                                    hovertemplate=f"<b>{player}</b> (Team 2)<br>"
-                                    + "Q1: %{{q1:.2f}}<br>"
-                                    + "Median: %{{median:.2f}}<br>"
-                                    + "Q3: %{{q3:.2f}}<br>"
-                                    + "Mean: "
-                                    + f"{mean_fp:.2f}<br>"
-                                    + "Min: %{{lowerfence:.2f}}<br>"
-                                    + "Max: %{{upperfence:.2f}}<br>"
-                                    + "<extra></extra>",
-                                )
-                            )
-
-                    # Update layout with light background
-                    fig_box.update_layout(
-                        title={
-                            "text": "Fantasy Points Distribution by Player",
-                            "font": {"size": 18, "color": "#1A1A1A"},
-                        },
-                        xaxis={
-                            "title": "Player",
-                            "showgrid": True,
-                            "gridcolor": "#E0E0E0",
-                            "title_font": {"size": 14, "color": "#333333"},
-                            "tickfont": {"color": "#666666"},
-                        },
-                        yaxis={
-                            "title": "Fantasy Points",
-                            "showgrid": True,
-                            "gridcolor": "#E0E0E0",
-                            "title_font": {"size": 14, "color": "#333333"},
-                            "tickfont": {"color": "#666666"},
-                        },
-                        plot_bgcolor="white",
-                        paper_bgcolor="white",
-                        legend={
-                            "yanchor": "top",
-                            "y": 0.99,
-                            "xanchor": "left",
-                            "x": 0.01,
-                            "bgcolor": "rgba(255, 255, 255, 0.9)",
-                            "bordercolor": "#E0E0E0",
-                            "borderwidth": 1,
-                            "font": {"size": 11, "color": "#1A1A1A"},
-                        },
-                        margin={"l": 60, "r": 20, "t": 60, "b": 100},
-                        height=500,
-                    )
-
-                    # Rotate x-axis labels for better readability
-                    fig_box.update_xaxes(tickangle=-45)
-
-                    st.plotly_chart(fig_box, use_container_width=True)
-
-                    # Add explanation
-                    st.caption(
-                        "📊 **Box Plot Guide:** The box shows quartiles (Q1, median, Q3). The whiskers extend to min/max values within 1.5×IQR. Points outside are outliers. The mean is shown as a dashed line."
-                    )
-                else:
-                    st.info(
-                        "No fantasy points data available for the selected players in the chosen date range."
-                    )
-
-                # Trade rating
-                st.markdown("---")
-                st.subheader("Trade Rating")
-
-                # Calculate rating based on multiple factors
-                rating_score = 0
-                rating_factors = []
-
-                # Factor 1: Average FP difference (weighted heavily)
-                if team1_total_avg > 0 and team2_total_avg > 0:
-                    fp_diff_pct = (
-                        (team1_total_avg - team2_total_avg)
-                        / max(team1_total_avg, team2_total_avg)
-                        * 100
-                    )
-                    if abs(fp_diff_pct) < 5:  # Within 5% is fair
-                        rating_score += 3
-                        rating_factors.append("✅ Average FP values are very close (fair trade)")
-                    elif abs(fp_diff_pct) < 10:  # Within 10% is reasonable
-                        rating_score += 2
-                        rating_factors.append(
-                            "⚠️ Average FP values differ by ~10% (slight imbalance)"
-                        )
-                    elif abs(fp_diff_pct) < 20:  # Within 20% is questionable
-                        rating_score += 1
-                        rating_factors.append("⚠️ Average FP values differ significantly (~20%)")
-                    else:  # More than 20% difference
-                        rating_score += 0
-                        rating_factors.append("❌ Large difference in average FP values (>20%)")
-
-                # Factor 2: Consistency (lower std dev is better)
-                if team1_total_std > 0 and team2_total_std > 0:
-                    std_ratio = min(team1_total_std, team2_total_std) / max(
-                        team1_total_std, team2_total_std
-                    )
-                    if std_ratio > 0.8:
-                        rating_score += 1
-                        rating_factors.append("✅ Both sides have similar consistency")
-                    elif std_ratio > 0.6:
-                        rating_score += 0.5
-                        rating_factors.append("⚠️ Some difference in consistency")
-                    else:
-                        rating_factors.append("⚠️ Significant difference in consistency")
-
-                # Factor 3: Sample size (more games = more reliable)
-                team1_games = sum(s["games_played"] for s in team1_stats) if team1_stats else 0
-                team2_games = sum(s["games_played"] for s in team2_stats) if team2_stats else 0
-                if team1_games >= 10 and team2_games >= 10:
+            # Factor 1: Average FP difference (weighted heavily)
+            if team1_total_avg > 0 and team2_total_avg > 0:
+                fp_diff_pct = (
+                    (team1_total_avg - team2_total_avg)
+                    / max(team1_total_avg, team2_total_avg)
+                    * 100
+                )
+                if abs(fp_diff_pct) < 5:  # Within 5% is fair
+                    rating_score += 3
+                    rating_factors.append("✅ Average FP values are very close (fair trade)")
+                elif abs(fp_diff_pct) < 10:  # Within 10% is reasonable
+                    rating_score += 2
+                    rating_factors.append("⚠️ Average FP values differ by ~10% (slight imbalance)")
+                elif abs(fp_diff_pct) < 20:  # Within 20% is questionable
                     rating_score += 1
-                    rating_factors.append("✅ Sufficient sample size for both sides")
-                elif team1_games >= 5 and team2_games >= 5:
+                    rating_factors.append("⚠️ Average FP values differ significantly (~20%)")
+                else:  # More than 20% difference
+                    rating_score += 0
+                    rating_factors.append("❌ Large difference in average FP values (>20%)")
+
+            # Factor 2: Consistency (lower std dev is better)
+            if team1_total_std > 0 and team2_total_std > 0:
+                std_ratio = min(team1_total_std, team2_total_std) / max(
+                    team1_total_std, team2_total_std
+                )
+                if std_ratio > 0.8:
+                    rating_score += 1
+                    rating_factors.append("✅ Both sides have similar consistency")
+                elif std_ratio > 0.6:
                     rating_score += 0.5
-                    rating_factors.append("⚠️ Limited sample size - results may be less reliable")
+                    rating_factors.append("⚠️ Some difference in consistency")
                 else:
-                    rating_factors.append("⚠️ Very limited sample size - use caution")
+                    rating_factors.append("⚠️ Significant difference in consistency")
 
-                # Determine final rating
-                max_score = 5
-                rating_pct = (rating_score / max_score) * 100
+            # Factor 3: Sample size (more games = more reliable)
+            team1_games = sum(s["games_played"] for s in team1_stats) if team1_stats else 0
+            team2_games = sum(s["games_played"] for s in team2_stats) if team2_stats else 0
+            if team1_games >= 10 and team2_games >= 10:
+                rating_score += 1
+                rating_factors.append("✅ Sufficient sample size for both sides")
+            elif team1_games >= 5 and team2_games >= 5:
+                rating_score += 0.5
+                rating_factors.append("⚠️ Limited sample size - results may be less reliable")
+            else:
+                rating_factors.append("⚠️ Very limited sample size - use caution")
 
-                if rating_pct >= 80:
-                    rating = "✅ **WORTHY OF CONSIDERATION**"
-                    rating_color = "success"
-                elif rating_pct >= 60:
-                    rating = "⚠️ **MARGINALLY WORTHY**"
-                    rating_color = "warning"
+            # Determine final rating
+            max_score = 5
+            rating_pct = (rating_score / max_score) * 100
+
+            if rating_pct >= 80:
+                rating = "✅ **WORTHY OF CONSIDERATION**"
+                rating_color = "success"
+            elif rating_pct >= 60:
+                rating = "⚠️ **MARGINALLY WORTHY**"
+                rating_color = "warning"
+            else:
+                rating = "❌ **NOT WORTHY OF CONSIDERATION**"
+                rating_color = "error"
+
+            # Display rating
+            if rating_color == "success":
+                st.success(rating)
+            elif rating_color == "warning":
+                st.warning(rating)
+            else:
+                st.error(rating)
+
+            # Display rating factors
+            st.write("**Rating Factors:**")
+            for factor in rating_factors:
+                st.write(factor)
+
+            # Additional insights
+            st.markdown("---")
+            st.subheader("Additional Insights")
+
+            if team1_stats and team2_stats:
+                # Best and worst players
+                team1_best = max(team1_stats, key=lambda x: x["avg_fp"])
+                team2_best = max(team2_stats, key=lambda x: x["avg_fp"])
+
+                st.write("**Highest Average FP:**")
+                st.write(
+                    f"- Team 1: {team1_best['player_name']} ({team1_best['avg_fp']:.2f} FP/game)"
+                )
+                st.write(
+                    f"- Team 2: {team2_best['player_name']} ({team2_best['avg_fp']:.2f} FP/game)"
+                )
+
+                # Consistency comparison
+                team1_avg_std = np.mean([s["std_fp"] for s in team1_stats])
+                team2_avg_std = np.mean([s["std_fp"] for s in team2_stats])
+
+                st.write("**Consistency (Avg Std Dev):**")
+                st.write(f"- Team 1: {team1_avg_std:.2f}")
+                st.write(f"- Team 2: {team2_avg_std:.2f}")
+
+                if team1_avg_std < team2_avg_std:
+                    st.info("Team 1 players are more consistent (lower variance)")
+                elif team2_avg_std < team1_avg_std:
+                    st.info("Team 2 players are more consistent (lower variance)")
                 else:
-                    rating = "❌ **NOT WORTHY OF CONSIDERATION**"
-                    rating_color = "error"
+                    st.info("Both teams have similar consistency")
 
-                # Display rating
-                if rating_color == "success":
-                    st.success(rating)
-                elif rating_color == "warning":
-                    st.warning(rating)
-                else:
-                    st.error(rating)
+            # Recommendation
+            st.markdown("---")
+            st.subheader("Recommendation")
 
-                # Display rating factors
-                st.write("**Rating Factors:**")
-                for factor in rating_factors:
-                    st.write(factor)
+            diff = team1_total_avg - team2_total_avg
+            if diff > 5:
+                st.info(
+                    f"**Team 1 is giving up more value** (avg {diff:.2f} FP/game more). Consider asking for additional compensation or reconsider the trade."
+                )
+            elif diff < -5:
+                st.info(
+                    f"**Team 2 is giving up more value** (avg {abs(diff):.2f} FP/game more). This trade favors Team 1."
+                )
+            else:
+                st.success(
+                    "**The trade appears relatively balanced** based on average fantasy points. Consider other factors like roster needs, positional depth, and future schedules."
+                )
 
-                # Additional insights
-                st.markdown("---")
-                st.subheader("Additional Insights")
+            # AI Trade Analysis
+            st.markdown("---")
+            st.subheader("🤖 AI Trade Analysis")
+            st.markdown(
+                "Get AI-powered insights comparing both teams, assessing strengths/weaknesses, and strategic considerations."
+            )
 
-                if team1_stats and team2_stats:
-                    # Best and worst players
-                    team1_best = max(team1_stats, key=lambda x: x["avg_fp"])
-                    team2_best = max(team2_stats, key=lambda x: x["avg_fp"])
+            # Check if AI is available
+            if not LANGCHAIN_AVAILABLE:
+                st.warning(
+                    "⚠️ AI analysis requires additional packages. Install with: `pip install langchain-openai langchain`"
+                )
+                st.info(
+                    "Once installed, set your `OPENAI_API_KEY` in your `.env` file to enable AI analysis."
+                )
+            else:
+                # Initialize chatbot in session state for trade analysis
+                needs_reinit = False
+                if "trade_chatbot" not in st.session_state:
+                    needs_reinit = True
+                elif hasattr(st.session_state.trade_chatbot, "chain"):
+                    needs_reinit = True
+                elif not hasattr(st.session_state.trade_chatbot, "llm"):
+                    needs_reinit = True
 
-                    st.write("**Highest Average FP:**")
-                    st.write(
-                        f"- Team 1: {team1_best['player_name']} ({team1_best['avg_fp']:.2f} FP/game)"
-                    )
-                    st.write(
-                        f"- Team 2: {team2_best['player_name']} ({team2_best['avg_fp']:.2f} FP/game)"
-                    )
+                if needs_reinit:
+                    try:
+                        st.session_state.trade_chatbot = PlayerAnalysisChatbot()
+                    except ValueError as e:
+                        st.error(f"❌ Configuration Error: {str(e)}")
+                        st.info(
+                            "Please set your `OPENAI_API_KEY` in your `.env` file to enable AI analysis."
+                        )
+                    except Exception as e:
+                        st.error(f"❌ Error initializing AI chatbot: {str(e)}")
 
-                    # Consistency comparison
-                    team1_avg_std = np.mean([s["std_fp"] for s in team1_stats])
-                    team2_avg_std = np.mean([s["std_fp"] for s in team2_stats])
+                # Generate AI analysis button
+                if "trade_chatbot" in st.session_state:
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        if st.button(
+                            "🤖 Generate AI Trade Analysis",
+                            type="primary",
+                            key="generate_trade_ai",
+                            use_container_width=True,
+                        ):
+                            with st.spinner("🤖 Analyzing trade proposal..."):
+                                trade_analysis = (
+                                    st.session_state.trade_chatbot.generate_trade_analysis(
+                                        team1_stats=team1_stats,
+                                        team2_stats=team2_stats,
+                                        team1_players=team1_players,
+                                        team2_players=team2_players,
+                                        team1_total_avg=team1_total_avg,
+                                        team2_total_avg=team2_total_avg,
+                                        team1_total_std=team1_total_std,
+                                        team2_total_std=team2_total_std,
+                                        injury_scraper=injury_scraper,
+                                    )
+                                )
+                                # Store analysis in session state
+                                st.session_state.trade_analysis = trade_analysis
+                                st.session_state.trade_analysis_generated = True
+                                st.rerun()
 
-                    st.write("**Consistency (Avg Std Dev):**")
-                    st.write(f"- Team 1: {team1_avg_std:.2f}")
-                    st.write(f"- Team 2: {team2_avg_std:.2f}")
+                    with col2:
+                        if st.button(
+                            "🔄 Clear Analysis", key="clear_trade_ai", use_container_width=True
+                        ):
+                            if "trade_analysis" in st.session_state:
+                                del st.session_state.trade_analysis
+                            if "trade_analysis_generated" in st.session_state:
+                                del st.session_state.trade_analysis_generated
+                            st.rerun()
 
-                    if team1_avg_std < team2_avg_std:
-                        st.info("Team 1 players are more consistent (lower variance)")
-                    elif team2_avg_std < team1_avg_std:
-                        st.info("Team 2 players are more consistent (lower variance)")
-                    else:
-                        st.info("Both teams have similar consistency")
+                    # Display AI analysis if generated
+                    if (
+                        "trade_analysis_generated" in st.session_state
+                        and st.session_state.trade_analysis_generated
+                    ):
+                        if "trade_analysis" in st.session_state:
+                            st.markdown("---")
+                            st.markdown("### 📊 AI Trade Analysis Report")
+                            st.markdown(st.session_state.trade_analysis)
 
-                # Recommendation
-                st.markdown("---")
-                st.subheader("Recommendation")
+                            # Chat interface for follow-up questions about the trade
+                            st.markdown("---")
+                            st.markdown("### 💬 Ask Follow-up Questions About This Trade")
 
-                if diff > 5:
-                    st.info(
-                        f"**Team 1 is giving up more value** (avg {diff:.2f} FP/game more). Consider asking for additional compensation or reconsider the trade."
-                    )
-                elif diff < -5:
-                    st.info(
-                        f"**Team 2 is giving up more value** (avg {abs(diff):.2f} FP/game more). This trade favors Team 1."
-                    )
-                else:
-                    st.success(
-                        "**The trade appears relatively balanced** based on average fantasy points. Consider other factors like roster needs, positional depth, and future schedules."
-                    )
+                            # Initialize trade chat messages if not exists
+                            if "trade_chat_messages" not in st.session_state:
+                                st.session_state.trade_chat_messages = []
+
+                            # Display chat messages
+                            for message in st.session_state.trade_chat_messages:
+                                if message["role"] == "user":
+                                    with st.chat_message("user"):
+                                        st.write(message["content"])
+                                else:
+                                    with st.chat_message("assistant"):
+                                        st.write(message["content"])
+
+                            # Chat input for trade questions
+                            trade_context = f"Team 1 is trading: {', '.join(team1_players) if team1_players else 'None'}. Team 2 is trading: {', '.join(team2_players) if team2_players else 'None'}."
+                            if prompt := st.chat_input(
+                                "Ask about this trade proposal, player comparisons, or strategic advice..."
+                            ):
+                                # Add user message to history
+                                st.session_state.trade_chat_messages.append(
+                                    {"role": "user", "content": prompt}
+                                )
+
+                                # Show typing indicator
+                                with st.chat_message("assistant"):
+                                    with st.spinner("Thinking..."):
+                                        # Add context about the current trade
+                                        contextual_prompt = f"Context: {trade_context}\n\nTrade Analysis Summary:\n{st.session_state.trade_analysis[:500]}...\n\nUser Question: {prompt}"
+                                        bot_response = st.session_state.trade_chatbot.get_response(
+                                            contextual_prompt
+                                        )
+                                        st.session_state.trade_chat_messages.append(
+                                            {"role": "assistant", "content": bot_response}
+                                        )
+
+                                # Rerun to display new messages
+                                st.rerun()
+
+                            # Helpful suggestions
+                            st.markdown("---")
+                            st.markdown("**💡 Try asking:**")
+                            st.markdown("- Which side benefits more from this trade?")
+                            st.markdown("- What are the biggest risks for each team?")
+                            st.markdown(
+                                "- Should I counter this trade? If so, what should I ask for?"
+                            )
+                            st.markdown("- How does this trade affect my roster depth?")
+                            st.markdown("- Which players have the most upside/downside?")
