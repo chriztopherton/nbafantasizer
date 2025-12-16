@@ -327,6 +327,16 @@ def calculate_player_trade_stats(player_name, df_fp, date_col, start_date, end_d
         "min_fp": player_data["FP"].min(),
         "max_fp": player_data["FP"].max(),
         "median_fp": player_data["FP"].median(),
+        # Additional statistical averages
+        "avg_points": player_data["points"].mean() if "points" in player_data.columns else None,
+        "avg_rebounds": player_data["reboundsTotal"].mean() if "reboundsTotal" in player_data.columns else None,
+        "avg_assists": player_data["assists"].mean() if "assists" in player_data.columns else None,
+        "avg_steals": player_data["steals"].mean() if "steals" in player_data.columns else None,
+        "avg_blocks": player_data["blocks"].mean() if "blocks" in player_data.columns else None,
+        "avg_turnovers": player_data["turnovers"].mean() if "turnovers" in player_data.columns else None,
+        "avg_minutes": player_data["numMinutes"].mean() if "numMinutes" in player_data.columns else None,
+        "avg_fg_pct": player_data["fieldGoalsPercentage"].mean() if "fieldGoalsPercentage" in player_data.columns else None,
+        "avg_ft_pct": player_data["freeThrowsPercentage"].mean() if "freeThrowsPercentage" in player_data.columns else None,
     }
 
     return stats
@@ -1302,9 +1312,19 @@ with tab1:
                 del player_data_indexed
             except Exception as e:
                 st.warning(f"Warning: Could not calculate all moving averages: {e}")
-                # Clean up even on error
-                if "player_data_indexed" in locals():
-                    del player_data_indexed
+            # Clean up even on error
+            if "player_data_indexed" in locals():
+                del player_data_indexed
+
+            # Add radio button to select moving average
+            ma_options = ["None"] + list(ma_windows.keys())
+            selected_ma = st.radio(
+                "Select Moving Average Trend Line:",
+                options=ma_options,
+                index=1,
+                horizontal=True,
+                key="ma_selector"
+            )
 
             # Create Plotly figure
             fig = go.Figure()
@@ -1328,14 +1348,15 @@ with tab1:
 
             fig.add_trace(go.Scatter(**scatter_kwargs))
 
-            # Add moving average smoothing lines
-            for ma_name, ma_data in moving_averages.items():
+            # Add selected moving average smoothing line (if any)
+            if selected_ma != "None" and selected_ma in moving_averages:
+                ma_data = moving_averages[selected_ma]
                 fig.add_trace(
                     go.Scatter(
                         x=x,
                         y=ma_data["values"],
                         mode="lines",
-                        name=f"MA ({ma_name})",
+                        name=f"MA ({selected_ma})",
                         line={"color": ma_data["color"], "width": 2},
                         opacity=0.8,
                     )
@@ -1524,24 +1545,160 @@ with tab2:
             with breakdown_col1:
                 st.write("**Team 1 Players:**")
                 if team1_stats:
+                    # Fetch injury info for each player
+                    for stats in team1_stats:
+                        try:
+                            injury_info = injury_scraper.get_player_injury(stats["player_name"])
+                            if injury_info:
+                                stats["health_status"] = injury_info.get("status", "Unknown")
+                                injury_comment = injury_info.get("comment", "")
+                                if injury_comment:
+                                    # Truncate long comments
+                                    stats["health_note"] = injury_comment[:100] + "..." if len(injury_comment) > 100 else injury_comment
+                                else:
+                                    stats["health_note"] = stats["health_status"]
+                            else:
+                                stats["health_status"] = "Healthy"
+                                stats["health_note"] = "No current injuries reported"
+                        except Exception:
+                            stats["health_status"] = "Unknown"
+                            stats["health_note"] = "Could not fetch injury data"
+                    
                     team1_df = pd.DataFrame(team1_stats)
                     team1_df = team1_df.round(2)
-                    st.dataframe(
-                        team1_df[["player_name", "avg_fp", "std_fp", "total_fp", "games_played"]],
-                        use_container_width=True,
-                    )
+                    
+                    # Select and order columns for display
+                    display_columns = [
+                        "player_name",
+                        "health_status",
+                        "health_note",
+                        "games_played",
+                        "avg_fp",
+                        "avg_points",
+                        "avg_rebounds",
+                        "avg_assists",
+                        "avg_steals",
+                        "avg_blocks",
+                        "avg_turnovers",
+                        "avg_minutes",
+                        "avg_fg_pct",
+                        "avg_ft_pct",
+                        "std_fp",
+                        "min_fp",
+                        "max_fp",
+                    ]
+                    
+                    # Filter to only columns that exist and have at least some non-null data
+                    available_columns = [
+                        col for col in display_columns 
+                        if col in team1_df.columns and (team1_df[col].notna().any() if len(team1_df) > 0 else False)
+                    ]
+                    
+                    # Rename columns for better display
+                    rename_dict = {
+                        "player_name": "Player",
+                        "health_status": "Health Status",
+                        "health_note": "Health Note",
+                        "games_played": "Games",
+                        "avg_fp": "Avg FP",
+                        "avg_points": "PTS",
+                        "avg_rebounds": "REB",
+                        "avg_assists": "AST",
+                        "avg_steals": "STL",
+                        "avg_blocks": "BLK",
+                        "avg_turnovers": "TOV",
+                        "avg_minutes": "MIN",
+                        "avg_fg_pct": "FG%",
+                        "avg_ft_pct": "FT%",
+                        "std_fp": "FP Std Dev",
+                        "min_fp": "Min FP",
+                        "max_fp": "Max FP",
+                    }
+                    
+                    display_df = team1_df[available_columns].copy()
+                    display_df = display_df.rename(columns=rename_dict)
+                    
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
                 else:
                     st.write("No players selected")
 
             with breakdown_col2:
                 st.write("**Team 2 Players:**")
                 if team2_stats:
+                    # Fetch injury info for each player
+                    for stats in team2_stats:
+                        try:
+                            injury_info = injury_scraper.get_player_injury(stats["player_name"])
+                            if injury_info:
+                                stats["health_status"] = injury_info.get("status", "Unknown")
+                                injury_comment = injury_info.get("comment", "")
+                                if injury_comment:
+                                    # Truncate long comments
+                                    stats["health_note"] = injury_comment[:100] + "..." if len(injury_comment) > 100 else injury_comment
+                                else:
+                                    stats["health_note"] = stats["health_status"]
+                            else:
+                                stats["health_status"] = "Healthy"
+                                stats["health_note"] = "No current injuries reported"
+                        except Exception:
+                            stats["health_status"] = "Unknown"
+                            stats["health_note"] = "Could not fetch injury data"
+                    
                     team2_df = pd.DataFrame(team2_stats)
                     team2_df = team2_df.round(2)
-                    st.dataframe(
-                        team2_df[["player_name", "avg_fp", "std_fp", "total_fp", "games_played"]],
-                        use_container_width=True,
-                    )
+                    
+                    # Select and order columns for display
+                    display_columns = [
+                        "player_name",
+                        "health_status",
+                        "health_note",
+                        "games_played",
+                        "avg_fp",
+                        "avg_points",
+                        "avg_rebounds",
+                        "avg_assists",
+                        "avg_steals",
+                        "avg_blocks",
+                        "avg_turnovers",
+                        "avg_minutes",
+                        "avg_fg_pct",
+                        "avg_ft_pct",
+                        "std_fp",
+                        "min_fp",
+                        "max_fp",
+                    ]
+                    
+                    # Filter to only columns that exist and have at least some non-null data
+                    available_columns = [
+                        col for col in display_columns 
+                        if col in team2_df.columns and (team2_df[col].notna().any() if len(team2_df) > 0 else False)
+                    ]
+                    
+                    # Rename columns for better display
+                    rename_dict = {
+                        "player_name": "Player",
+                        "health_status": "Health Status",
+                        "health_note": "Health Note",
+                        "games_played": "Games",
+                        "avg_fp": "Avg FP",
+                        "avg_points": "PTS",
+                        "avg_rebounds": "REB",
+                        "avg_assists": "AST",
+                        "avg_steals": "STL",
+                        "avg_blocks": "BLK",
+                        "avg_turnovers": "TOV",
+                        "avg_minutes": "MIN",
+                        "avg_fg_pct": "FG%",
+                        "avg_ft_pct": "FT%",
+                        "std_fp": "FP Std Dev",
+                        "min_fp": "Min FP",
+                        "max_fp": "Max FP",
+                    }
+                    
+                    display_df = team2_df[available_columns].copy()
+                    display_df = display_df.rename(columns=rename_dict)
+                    
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
                 else:
                     st.write("No players selected")
 
