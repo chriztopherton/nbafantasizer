@@ -1,14 +1,13 @@
 import os
 from datetime import datetime, timedelta
 
-import matplotlib.colors as mcolors
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from dotenv import load_dotenv
 from injury_scraper import ESPNInjuryScraper
+from style import apply_custom_css, apply_game_log_styling
 
 # Load environment variables
 load_dotenv()
@@ -33,162 +32,8 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Custom CSS for fantasy stat tracker look and feel
-st.markdown(
-    """
-    <style>
-    /* Main styling to match fantasy stat tracker */
-    .main .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
-    }
-
-    /* Header styling */
-    h1 {
-        color: #1A1A1A;
-        font-weight: 600;
-        font-size: 2rem;
-        margin-bottom: 1rem;
-    }
-
-    h2 {
-        color: #1A1A1A;
-        font-weight: 600;
-        font-size: 1.5rem;
-        margin-top: 1.5rem;
-        margin-bottom: 1rem;
-        border-bottom: 2px solid #FF6C37;
-        padding-bottom: 0.5rem;
-    }
-
-    h3 {
-        color: #333333;
-        font-weight: 600;
-        font-size: 1.25rem;
-        margin-top: 1rem;
-    }
-
-    /* Sidebar styling */
-    [data-testid="stSidebar"] {
-        background-color: #F8F9FA;
-    }
-
-    [data-testid="stSidebar"] [data-testid="stHeader"] {
-        background-color: #FFFFFF;
-        color: #FF6C37;
-        font-weight: 600;
-    }
-
-    /* Section headers with orange accent */
-    .section-header {
-        background-color: #FF6C37;
-        color: white;
-        padding: 0.5rem 1rem;
-        border-radius: 4px;
-        font-weight: 600;
-        margin-top: 1rem;
-        margin-bottom: 0.5rem;
-    }
-
-    /* Metric cards */
-    [data-testid="stMetricValue"] {
-        color: #1A1A1A;
-    }
-
-    [data-testid="stMetricLabel"] {
-        color: #666666;
-    }
-
-    /* Button styling */
-    .stButton > button {
-        background-color: #FF6C37;
-        color: white;
-        border: none;
-        border-radius: 4px;
-        font-weight: 500;
-        transition: background-color 0.3s;
-    }
-
-    .stButton > button:hover {
-        background-color: #E55A2E;
-    }
-
-    /* Tab styling */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-    }
-
-    .stTabs [data-baseweb="tab"] {
-        color: #666666;
-        font-weight: 500;
-        padding: 10px 20px;
-        border-radius: 4px 4px 0 0;
-    }
-
-    .stTabs [aria-selected="true"] {
-        background-color: #FF6C37;
-        color: white;
-    }
-
-    /* Dataframe styling */
-    .dataframe {
-        border-radius: 4px;
-        overflow: hidden;
-    }
-
-    /* Info/Alert boxes */
-    .stInfo {
-        background-color: #E3F2FD;
-        border-left: 4px solid #2196F3;
-    }
-
-    .stSuccess {
-        background-color: #E8F5E9;
-        border-left: 4px solid #4CAF50;
-    }
-
-    .stWarning {
-        background-color: #FFF3E0;
-        border-left: 4px solid #FF9800;
-    }
-
-    .stError {
-        background-color: #FFEBEE;
-        border-left: 4px solid #F44336;
-    }
-
-    /* Sidebar selectbox styling */
-    [data-testid="stSidebar"] .stSelectbox label {
-        color: #333333;
-        font-weight: 500;
-    }
-
-    /* Remove Streamlit branding - but keep header for sidebar toggle */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-
-    /* Hide only the Streamlit logo/branding text, not the sidebar toggle button */
-    header[data-testid="stHeader"] a[href*="streamlit"],
-    header[data-testid="stHeader"] img[alt*="Streamlit"],
-    header[data-testid="stHeader"] img[src*="logo"] {
-        display: none !important;
-    }
-
-    /* Ensure sidebar toggle button is always visible - target all header buttons */
-    header[data-testid="stHeader"] button {
-        visibility: visible !important;
-        display: inline-flex !important;
-        opacity: 1 !important;
-    }
-
-    /* Ensure sidebar is always visible and properly styled */
-    section[data-testid="stSidebar"] {
-        visibility: visible !important;
-    }
-    </style>
-""",
-    unsafe_allow_html=True,
-)
+# Apply custom CSS for fantasy stat tracker look and feel
+apply_custom_css()
 
 st.title("🏀 Fantasy Points Analyzer")
 st.markdown("Analyze fantasy points for players over time and evaluate trades.")
@@ -329,14 +174,28 @@ def calculate_player_trade_stats(player_name, df_fp, date_col, start_date, end_d
         "median_fp": player_data["FP"].median(),
         # Additional statistical averages
         "avg_points": player_data["points"].mean() if "points" in player_data.columns else None,
-        "avg_rebounds": player_data["reboundsTotal"].mean() if "reboundsTotal" in player_data.columns else None,
+        "avg_rebounds": (
+            player_data["reboundsTotal"].mean() if "reboundsTotal" in player_data.columns else None
+        ),
         "avg_assists": player_data["assists"].mean() if "assists" in player_data.columns else None,
         "avg_steals": player_data["steals"].mean() if "steals" in player_data.columns else None,
         "avg_blocks": player_data["blocks"].mean() if "blocks" in player_data.columns else None,
-        "avg_turnovers": player_data["turnovers"].mean() if "turnovers" in player_data.columns else None,
-        "avg_minutes": player_data["numMinutes"].mean() if "numMinutes" in player_data.columns else None,
-        "avg_fg_pct": player_data["fieldGoalsPercentage"].mean() if "fieldGoalsPercentage" in player_data.columns else None,
-        "avg_ft_pct": player_data["freeThrowsPercentage"].mean() if "freeThrowsPercentage" in player_data.columns else None,
+        "avg_turnovers": (
+            player_data["turnovers"].mean() if "turnovers" in player_data.columns else None
+        ),
+        "avg_minutes": (
+            player_data["numMinutes"].mean() if "numMinutes" in player_data.columns else None
+        ),
+        "avg_fg_pct": (
+            player_data["fieldGoalsPercentage"].mean()
+            if "fieldGoalsPercentage" in player_data.columns
+            else None
+        ),
+        "avg_ft_pct": (
+            player_data["freeThrowsPercentage"].mean()
+            if "freeThrowsPercentage" in player_data.columns
+            else None
+        ),
     }
 
     return stats
@@ -977,83 +836,8 @@ with tab1:
                     st.error(f"Error preparing display dataframe: {e}")
                     st.stop()
 
-                # Apply green gradient styling to specified columns
-                columns_to_style = [
-                    "FP",
-                    "numMinutes",
-                    "points",
-                    "reboundsTotal",
-                    "assists",
-                    "steals",
-                    "blocks",
-                    "fieldGoals%",
-                    "freeThrows%",
-                ]
-
-                # Only style columns that exist in the dataframe
-                columns_to_style = [col for col in columns_to_style if col in display_df.columns]
-
-                # Format decimal columns to always show 2 decimal places
-                format_dict = {}
-                for col in decimal_columns:
-                    if col in display_df.columns:
-                        format_dict[col] = "{:.2f}"
-
-                # Function to apply text color gradient instead of background
-                def color_text_gradient(series, cmap_name="Greens"):
-                    """Apply color gradient to text based on value in a Series"""
-                    # Convert to numeric, handling errors
-                    numeric_series = pd.to_numeric(series, errors="coerce")
-
-                    # Get min and max for normalization
-                    min_val = numeric_series.min()
-                    max_val = numeric_series.max()
-
-                    # Handle edge cases
-                    if pd.isna(min_val) or pd.isna(max_val) or min_val == max_val:
-                        return pd.Series(
-                            ["color: #1A1A1A; background-color: transparent;"] * len(series),
-                            index=series.index,
-                        )
-
-                    # Normalize values to 0-1 range
-                    normalized = (numeric_series - min_val) / (max_val - min_val)
-
-                    # Get color from colormap
-                    cmap = plt.cm.get_cmap(cmap_name)
-
-                    # Apply color to each value
-                    styles = []
-                    for norm_val in normalized:
-                        if pd.isna(norm_val):
-                            styles.append("color: #1A1A1A; background-color: transparent;")
-                        else:
-                            rgba = cmap(norm_val)
-                            hex_color = mcolors.rgb2hex(rgba[:3])
-                            styles.append(f"color: {hex_color}; background-color: transparent;")
-
-                    return pd.Series(styles, index=series.index)
-
-                # Create styled dataframe with text color gradient
-                styled_df = display_df.style.format(format_dict)
-
-                # Apply text color gradient to positive columns (darker greens for light theme)
-                for col in columns_to_style:
-                    if col in display_df.columns:
-                        styled_df = styled_df.apply(
-                            lambda x: color_text_gradient(x, cmap_name="Greens"),
-                            subset=[col],
-                            axis=0,
-                        )
-
-                # Apply red text color gradient to turnovers
-                if "turnovers" in display_df.columns:
-                    styled_df = styled_df.apply(
-                        lambda x: color_text_gradient(x, cmap_name="Reds"),
-                        subset=["turnovers"],
-                        axis=0,
-                    )
-
+                # Apply styling to game log dataframe
+                styled_df = apply_game_log_styling(display_df, decimal_columns)
                 st.dataframe(styled_df, width="stretch")
                 # st.dataframe(player_data_ytd, use_container_width=True)
                 # with stats:
@@ -1323,7 +1107,7 @@ with tab1:
                 options=ma_options,
                 index=1,
                 horizontal=True,
-                key="ma_selector"
+                key="ma_selector",
             )
 
             # Create Plotly figure
@@ -1554,7 +1338,11 @@ with tab2:
                                 injury_comment = injury_info.get("comment", "")
                                 if injury_comment:
                                     # Truncate long comments
-                                    stats["health_note"] = injury_comment[:100] + "..." if len(injury_comment) > 100 else injury_comment
+                                    stats["health_note"] = (
+                                        injury_comment[:100] + "..."
+                                        if len(injury_comment) > 100
+                                        else injury_comment
+                                    )
                                 else:
                                     stats["health_note"] = stats["health_status"]
                             else:
@@ -1563,10 +1351,10 @@ with tab2:
                         except Exception:
                             stats["health_status"] = "Unknown"
                             stats["health_note"] = "Could not fetch injury data"
-                    
+
                     team1_df = pd.DataFrame(team1_stats)
                     team1_df = team1_df.round(2)
-                    
+
                     # Select and order columns for display
                     display_columns = [
                         "player_name",
@@ -1587,13 +1375,15 @@ with tab2:
                         "min_fp",
                         "max_fp",
                     ]
-                    
+
                     # Filter to only columns that exist and have at least some non-null data
                     available_columns = [
-                        col for col in display_columns 
-                        if col in team1_df.columns and (team1_df[col].notna().any() if len(team1_df) > 0 else False)
+                        col
+                        for col in display_columns
+                        if col in team1_df.columns
+                        and (team1_df[col].notna().any() if len(team1_df) > 0 else False)
                     ]
-                    
+
                     # Rename columns for better display
                     rename_dict = {
                         "player_name": "Player",
@@ -1614,10 +1404,10 @@ with tab2:
                         "min_fp": "Min FP",
                         "max_fp": "Max FP",
                     }
-                    
+
                     display_df = team1_df[available_columns].copy()
                     display_df = display_df.rename(columns=rename_dict)
-                    
+
                     st.dataframe(display_df, use_container_width=True, hide_index=True)
                 else:
                     st.write("No players selected")
@@ -1634,7 +1424,11 @@ with tab2:
                                 injury_comment = injury_info.get("comment", "")
                                 if injury_comment:
                                     # Truncate long comments
-                                    stats["health_note"] = injury_comment[:100] + "..." if len(injury_comment) > 100 else injury_comment
+                                    stats["health_note"] = (
+                                        injury_comment[:100] + "..."
+                                        if len(injury_comment) > 100
+                                        else injury_comment
+                                    )
                                 else:
                                     stats["health_note"] = stats["health_status"]
                             else:
@@ -1643,10 +1437,10 @@ with tab2:
                         except Exception:
                             stats["health_status"] = "Unknown"
                             stats["health_note"] = "Could not fetch injury data"
-                    
+
                     team2_df = pd.DataFrame(team2_stats)
                     team2_df = team2_df.round(2)
-                    
+
                     # Select and order columns for display
                     display_columns = [
                         "player_name",
@@ -1667,13 +1461,15 @@ with tab2:
                         "min_fp",
                         "max_fp",
                     ]
-                    
+
                     # Filter to only columns that exist and have at least some non-null data
                     available_columns = [
-                        col for col in display_columns 
-                        if col in team2_df.columns and (team2_df[col].notna().any() if len(team2_df) > 0 else False)
+                        col
+                        for col in display_columns
+                        if col in team2_df.columns
+                        and (team2_df[col].notna().any() if len(team2_df) > 0 else False)
                     ]
-                    
+
                     # Rename columns for better display
                     rename_dict = {
                         "player_name": "Player",
@@ -1694,10 +1490,10 @@ with tab2:
                         "min_fp": "Min FP",
                         "max_fp": "Max FP",
                     }
-                    
+
                     display_df = team2_df[available_columns].copy()
                     display_df = display_df.rename(columns=rename_dict)
-                    
+
                     st.dataframe(display_df, use_container_width=True, hide_index=True)
                 else:
                     st.write("No players selected")
