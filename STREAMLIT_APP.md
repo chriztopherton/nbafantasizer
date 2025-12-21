@@ -57,4 +57,3 @@ The app will open in your default web browser at `http://localhost:8501`
 - The app uses session state to cache data, so you don't need to reload the league on every interaction
 - Player collection may take a few moments depending on league size
 - Some features require player data to be collected first
-
