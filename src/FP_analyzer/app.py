@@ -121,6 +121,27 @@ def filter_data_by_date(data, date_col, start_date, end_date):
     return data
 
 
+# Helper function to get player personId from player name
+def get_player_person_id(player_name, df_fp):
+    """Get the personId (NBA player ID) for a given player name"""
+    if player_name is None:
+        return None
+    player_data = df_fp[df_fp["player_name"] == player_name]
+    if len(player_data) > 0 and "personId" in player_data.columns:
+        person_id = player_data["personId"].iloc[0]
+        if pd.notna(person_id):
+            return int(person_id)
+    return None
+
+
+# Helper function to get player image URL
+def get_player_image_url(person_id):
+    """Get the NBA.com CDN URL for a player's headshot image"""
+    if person_id is None:
+        return None
+    return f"https://cdn.nba.com/headshots/nba/latest/260x190/{person_id}.png"
+
+
 # Helper function to get player FP data for visualization
 def get_player_fp_data(player_name, df_fp, date_col, start_date, end_date):
     """Get all FP values for a player within date range"""
@@ -618,6 +639,14 @@ with st.sidebar:
     player_name = st.selectbox(
         "Select a player", player_list, key="player_select_sidebar", label_visibility="collapsed"
     )
+
+    # Display player image if available
+    if player_name:
+        person_id = get_player_person_id(player_name, df_fp)
+        if person_id:
+            image_url = get_player_image_url(person_id)
+            if image_url:
+                st.image(image_url, width=150, use_container_width=False)
 
     # Track the last selected player to detect changes
     if "last_selected_player" not in st.session_state:
