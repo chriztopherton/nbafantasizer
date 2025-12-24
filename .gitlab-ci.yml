@@ -1,0 +1,94 @@
+stages:
+  - update_data
+
+variables:
+  PYTHON_VERSION: "3.11"
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+cache:
+  paths:
+    - .cache/pip
+    - ~/.cache/kagglehub
+
+update_nba_data:
+  stage: update_data
+  image: python:${PYTHON_VERSION}
+  
+  # Run on a daily schedule
+  # To configure: GitLab UI -> CI/CD -> Schedules -> New schedule
+  # Set: Cron: 0 2 * * * (runs at 2 AM UTC daily)
+  only:
+    - schedules
+    - main  # Also allow manual trigger on main branch
+  
+  before_script:
+    # Install system dependencies
+    - apt-get update -qq && apt-get install -y -qq git
+    
+    # Install Python dependencies
+    - pip install --upgrade pip
+    - pip install pandas numpy kagglehub kaggle kagglesdk
+    
+    # Set up Kaggle credentials from CI/CD variables
+    # These should be set in GitLab: Settings -> CI/CD -> Variables
+    # KAGGLE_USERNAME and KAGGLE_KEY (marked as masked and protected)
+    - mkdir -p ~/.kaggle
+    - echo '{"username":"'$KAGGLE_USERNAME'","key":"'$KAGGLE_KEY'"}' > ~/.kaggle/kaggle.json
+    - chmod 600 ~/.kaggle/kaggle.json
+    
+    # Configure git for committing
+    - git config --global user.email "ci@gitlab.com"
+    - git config --global user.name "GitLab CI"
+  
+  script:
+    # Change to data directory and run the script
+    - cd data
+    - python export_post_21_data.py
+    
+    # Check if file was created/updated
+    - |
+      if [ -f "PlayerStatistics_transformed_post_21.csv" ]; then
+        echo "CSV file generated successfully"
+        ls -lh PlayerStatistics_transformed_post_21.csv
+      else
+        echo "Error: CSV file was not created"
+        exit 1
+      fi
+    
+    # Go back to project root
+    - cd ..
+    
+    # Ensure we're up to date with the remote
+    - git fetch origin ${CI_COMMIT_REF_NAME}
+    - git checkout ${CI_COMMIT_REF_NAME}
+    
+    # Check if there are changes to commit
+    - git add data/PlayerStatistics_transformed_post_21.csv
+    - |
+      if git diff --staged --quiet; then
+        echo "No changes to commit"
+      else
+        echo "Changes detected, committing..."
+        git commit -m "chore: update NBA player statistics data [skip ci]"
+        # Push changes back to repository
+        # Option 1: Use Project Access Token (recommended) - set GIT_PUSH_TOKEN as CI/CD variable
+        # Option 2: Use CI_JOB_TOKEN (requires enabling in Settings -> CI/CD -> Token Access)
+        if [ -n "$GIT_PUSH_TOKEN" ]; then
+          git push https://oauth2:${GIT_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git HEAD:${CI_COMMIT_REF_NAME}
+        else
+          git remote set-url origin https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git
+          git push origin HEAD:${CI_COMMIT_REF_NAME}
+        fi
+        echo "Changes committed and pushed successfully"
+      fi
+  
+  after_script:
+    # Clean up Kaggle credentials
+    - rm -f ~/.kaggle/kaggle.json
+  
+  artifacts:
+    paths:
+      - data/PlayerStatistics_transformed_post_21.csv
+    expire_in: 1 week
+    when: always
+
