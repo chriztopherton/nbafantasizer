@@ -90,7 +90,7 @@ def main():
     print(f"Records after filtering: {len(post_21)}")
     
     # Export to CSV
-    output_file = 'PlayerStatistics_transformed_post_21.csv'
+    output_file = 'data/PlayerStatistics_transformed_post_21.csv'
     print(f"Exporting to {output_file}...")
     post_21.to_csv(output_file, index=False)
     
