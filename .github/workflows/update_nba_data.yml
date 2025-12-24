@@ -1,0 +1,99 @@
+name: Update NBA Player Statistics Data
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  update_data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required to push changes back to repository
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for proper git operations
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      
+      - name: Cache Kaggle datasets
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/kagglehub
+          key: ${{ runner.os }}-kagglehub-cache
+          restore-keys: |
+            ${{ runner.os }}-kagglehub-
+      
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy kagglehub kaggle kagglesdk
+      
+      - name: Set up Kaggle credentials
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+        run: |
+          mkdir -p ~/.kaggle
+          echo '{"username":"'$KAGGLE_USERNAME'","key":"'$KAGGLE_KEY'"}' > ~/.kaggle/kaggle.json
+          chmod 600 ~/.kaggle/kaggle.json
+      
+      - name: Configure git
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+      
+      - name: Run data export script
+        working-directory: ./data
+        run: |
+          python export_post_21_data.py
+          if [ ! -f "PlayerStatistics_transformed_post_21.csv" ]; then
+            echo "Error: CSV file was not created"
+            exit 1
+          fi
+          echo "CSV file generated successfully"
+          ls -lh PlayerStatistics_transformed_post_21.csv
+      
+      - name: Check for changes and commit
+        run: |
+          git add data/PlayerStatistics_transformed_post_21.csv
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            echo "Changes detected, committing..."
+            git commit -m "chore: update NBA player statistics data [skip ci]"
+            # Push using the token from checkout action
+            git push origin HEAD:${{ github.ref_name }}
+            echo "Changes committed and pushed successfully"
+          fi
+      
+      - name: Clean up Kaggle credentials
+        if: always()
+        run: |
+          rm -f ~/.kaggle/kaggle.json
+      
+      - name: Upload CSV artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: player-statistics-post-21
+          path: data/PlayerStatistics_transformed_post_21.csv
+          retention-days: 7
+
