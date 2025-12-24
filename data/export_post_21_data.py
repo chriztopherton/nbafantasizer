@@ -10,9 +10,13 @@ import pandas as pd
 import kagglehub
 from kagglehub import KaggleDatasetAdapter
 import numpy as np
+import warnings
 
 # Set pandas display options
 pd.set_option('display.max_columns', None)
+
+# Suppress DtypeWarning for mixed types in CSV columns
+warnings.filterwarnings('ignore', category=pd.errors.DtypeWarning)
 
 
 def load_and_process_data():
@@ -89,8 +93,8 @@ def main():
     
     print(f"Records after filtering: {len(post_21)}")
     
-    # Export to CSV
-    output_file = 'data/PlayerStatistics_transformed_post_21.csv'
+    # Export to CSV (save to current directory since script runs from data/)
+    output_file = 'PlayerStatistics_transformed_post_21.csv'
     print(f"Exporting to {output_file}...")
     post_21.to_csv(output_file, index=False)
     
