@@ -54,7 +54,7 @@ injury_scraper = get_injury_scraper()
 # else:
 #     # Fallback for backwards compatibility
 #     df_fp = result
-df_fp = pd.read_csv("PlayerStatistics_transformed_post_21.csv")
+df_fp = pd.read_csv("data/PlayerStatistics_transformed_post_21.csv")
 # player_list = sorted(df_fp["player_name"].unique()) if len(df_fp) > 0 else []
 
 player_list = df_fp.groupby("player_name")["FP"].mean().sort_values(ascending=False).index.tolist()
