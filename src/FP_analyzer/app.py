@@ -142,6 +142,62 @@ def get_player_image_url(person_id):
     return f"https://cdn.nba.com/headshots/nba/latest/260x190/{person_id}.png"
 
 
+# Helper function to get player attributes
+def get_player_attributes(player_name, df_fp, injury_scraper=None):
+    """Get player attributes: team, height, position"""
+    if player_name is None:
+        return None
+
+    attributes = {
+        "team": None,
+        "height": None,
+        "position": None,
+    }
+
+    # Get team from dataframe (use most recent team)
+    player_data = df_fp[df_fp["player_name"] == player_name]
+    if len(player_data) > 0:
+        # Get the most recent team name
+        if "playerteamName" in player_data.columns:
+            # Get the most recent non-null team name
+            team_names = player_data["playerteamName"].dropna()
+            if len(team_names) > 0:
+                # Get the most recent team (assuming data is sorted by date)
+                attributes["team"] = team_names.iloc[-1] if len(team_names) > 0 else None
+
+        # Check for height column (might not exist)
+        if "height" in player_data.columns:
+            height_values = player_data["height"].dropna()
+            if len(height_values) > 0:
+                attributes["height"] = height_values.iloc[0]
+        elif "heightInches" in player_data.columns:
+            height_values = player_data["heightInches"].dropna()
+            if len(height_values) > 0:
+                height_inches = height_values.iloc[0]
+                # Convert to feet and inches format
+                if pd.notna(height_inches):
+                    feet = int(height_inches // 12)
+                    inches = int(height_inches % 12)
+                    attributes["height"] = f"{feet}'{inches}\""
+
+        # Check for position column
+        if "position" in player_data.columns:
+            position_values = player_data["position"].dropna()
+            if len(position_values) > 0:
+                attributes["position"] = position_values.iloc[0]
+
+    # Try to get position from injury scraper if not found in dataframe
+    if attributes["position"] is None and injury_scraper:
+        try:
+            injury_info = injury_scraper.get_player_injury(player_name)
+            if injury_info and injury_info.get("position"):
+                attributes["position"] = injury_info.get("position")
+        except Exception:
+            pass
+
+    return attributes
+
+
 # Helper function to get player FP data for visualization
 def get_player_fp_data(player_name, df_fp, date_col, start_date, end_date):
     """Get all FP values for a player within date range"""
@@ -220,6 +276,187 @@ def calculate_player_trade_stats(player_name, df_fp, date_col, start_date, end_d
     }
 
     return stats
+
+
+def analyze_recent_games(player_data, date_col, num_games=7):
+    """
+    Analyze player's performance in the last N games.
+    Returns a formatted string with performance summary.
+    """
+    if len(player_data) == 0:
+        return None
+
+    # Sort by date descending to get most recent games
+    sorted_data = player_data.sort_values(by=date_col, ascending=False)
+    recent_data = sorted_data.head(num_games)
+
+    if len(recent_data) == 0:
+        return None
+
+    # Calculate averages for recent games
+    avg_fp = recent_data["FP"].mean()
+    avg_points = recent_data["points"].mean()
+    avg_rebounds = recent_data["reboundsTotal"].mean()
+    avg_assists = recent_data["assists"].mean()
+    avg_steals = recent_data["steals"].mean()
+    avg_blocks = recent_data["blocks"].mean()
+    avg_turnovers = recent_data["turnovers"].mean()
+    avg_minutes = recent_data["numMinutes"].mean()
+    avg_fg_pct = recent_data["fieldGoalsPercentage"].mean()
+
+    # Compare to season averages (using all available data)
+    season_avg_fp = player_data["FP"].mean()
+    season_avg_fg_pct = player_data["fieldGoalsPercentage"].mean()
+
+    # Get opponent information for recent games
+    try:
+        if "opponent_with_at" in recent_data.columns:
+            recent_opponents = recent_data["opponent_with_at"].tolist()
+        else:
+            if "home" in recent_data.columns and "opponentteamName" in recent_data.columns:
+                recent_opponents = [
+                    f"@{opp}" if home == 0 else str(opp)
+                    for opp, home in zip(
+                        recent_data["opponentteamName"], recent_data["home"], strict=False
+                    )
+                ]
+            elif "opponentteamName" in recent_data.columns:
+                recent_opponents = recent_data["opponentteamName"].tolist()
+            else:
+                recent_opponents = None
+    except Exception:
+        recent_opponents = None
+
+    # Find standout performances (use iloc to get position in sorted dataframe)
+    max_fp_pos = recent_data["FP"].values.argmax()
+    min_fp_pos = recent_data["FP"].values.argmin()
+    max_fp_game = recent_data.iloc[max_fp_pos]
+    min_fp_game = recent_data.iloc[min_fp_pos]
+
+    # Get opponent for standout games
+    max_opponent = (
+        recent_opponents[max_fp_pos]
+        if recent_opponents and max_fp_pos < len(recent_opponents)
+        else None
+    )
+    min_opponent = (
+        recent_opponents[min_fp_pos]
+        if recent_opponents and min_fp_pos < len(recent_opponents)
+        else None
+    )
+
+    # Calculate trends (compare most recent half to older half)
+    if len(recent_data) >= 4:
+        mid_point = len(recent_data) // 2
+        most_recent_half = recent_data.iloc[:mid_point][
+            "FP"
+        ].mean()  # Most recent games (top of sorted list)
+        older_half = recent_data.iloc[mid_point:][
+            "FP"
+        ].mean()  # Older games (bottom of sorted list)
+        trend_diff = most_recent_half - older_half
+        trend_pct = (trend_diff / older_half * 100) if older_half > 0 else 0
+
+        if trend_pct > 5:
+            fp_trend = f"improving (+{trend_pct:.1f}%)"
+        elif trend_pct < -5:
+            fp_trend = f"declining ({trend_pct:.1f}%)"
+        else:
+            fp_trend = "stable"
+    else:
+        fp_trend = None
+
+    # Build analysis text
+    analysis_parts = []
+    analysis_parts.append(f"**Recent {len(recent_data)} Games Performance:**\n")
+
+    # Overall summary
+    fp_vs_season = ((avg_fp - season_avg_fp) / season_avg_fp * 100) if season_avg_fp > 0 else 0
+    if fp_vs_season > 5:
+        performance_summary = f"Strong performance ({fp_vs_season:.1f}% above season average)"
+    elif fp_vs_season < -5:
+        performance_summary = (
+            f"Below average performance ({abs(fp_vs_season):.1f}% below season average)"
+        )
+    else:
+        performance_summary = f"Consistent with season average ({fp_vs_season:+.1f}%)"
+
+    analysis_parts.append(f"- **Overall:** {performance_summary}\n")
+
+    # List opponents faced
+    if recent_opponents is not None and len(recent_opponents) > 0:
+        unique_opponents = list(
+            dict.fromkeys(recent_opponents)
+        )  # Preserve order while removing duplicates
+        opponents_text = ", ".join(
+            str(opp) for opp in unique_opponents[:5]
+        )  # Show up to 5 unique opponents
+        if len(unique_opponents) > 5:
+            opponents_text += f" (+{len(unique_opponents) - 5} more)"
+        analysis_parts.append(f"- **Opponents:** {opponents_text}\n")
+
+    # Key stats
+    analysis_parts.append(
+        f"- **Averages:** {avg_fp:.1f} FP, {avg_points:.1f} PTS, {avg_rebounds:.1f} REB, {avg_assists:.1f} AST, {avg_steals:.1f} STL, {avg_blocks:.1f} BLK\n"
+    )
+
+    # Standout performances
+    if max_fp_game["FP"] > season_avg_fp * 1.2:
+        opponent_text = f" vs {max_opponent}" if max_opponent else ""
+        analysis_parts.append(
+            f"- **Standout Game:** {max_fp_game['FP']:.1f} FP ({max_fp_game['points']:.0f} PTS, {max_fp_game['reboundsTotal']:.0f} REB, {max_fp_game['assists']:.0f} AST){opponent_text}\n"
+        )
+
+    # What's worth noting
+    notable_items = []
+    if max_fp_game["FP"] > avg_fp * 1.5:
+        notable_items.append(f"exceptional {max_fp_game['FP']:.1f} FP game")
+    if avg_steals > 2.0:
+        notable_items.append("strong steals production")
+    if avg_blocks > 2.0:
+        notable_items.append("strong shot-blocking")
+    if avg_assists > 7.0:
+        notable_items.append("high assist numbers")
+    if avg_rebounds > 10.0:
+        notable_items.append("strong rebounding")
+
+    if notable_items:
+        analysis_parts.append(f"- **Notable:** {', '.join(notable_items)}\n")
+
+    # Struggles/Concerns
+    struggles = []
+    if avg_fp < season_avg_fp * 0.85:
+        struggles.append("lower fantasy production")
+    if avg_turnovers > 3.5:
+        struggles.append(f"high turnovers ({avg_turnovers:.1f} per game)")
+    if avg_fg_pct < 0.40 and season_avg_fg_pct > 0.45:
+        struggles.append(f"poor shooting efficiency ({avg_fg_pct:.1%} FG%)")
+    if avg_minutes < 25 and len(player_data) > 5:
+        avg_season_minutes = player_data["numMinutes"].mean()
+        if avg_minutes < avg_season_minutes * 0.9:
+            struggles.append(f"reduced minutes ({avg_minutes:.1f} MPG)")
+    if min_fp_game["FP"] < season_avg_fp * 0.6 and len(recent_data) >= 3:
+        opponent_text = f" vs {min_opponent}" if min_opponent else ""
+        struggles.append(f"one concerning {min_fp_game['FP']:.1f} FP game{opponent_text}")
+
+    if struggles:
+        analysis_parts.append(f"- **Concerns:** {', '.join(struggles)}\n")
+
+    # Trends
+    if fp_trend:
+        analysis_parts.append(f"- **Trend:** Performance is {fp_trend} over recent games\n")
+
+    # Efficiency note
+    if avg_fg_pct > season_avg_fg_pct * 1.05 and season_avg_fg_pct > 0.40:
+        analysis_parts.append(
+            f"- **Efficiency:** Shooting well above season average ({avg_fg_pct:.1%} vs {season_avg_fg_pct:.1%} FG%)\n"
+        )
+    elif avg_fg_pct < season_avg_fg_pct * 0.95 and season_avg_fg_pct > 0.40:
+        analysis_parts.append(
+            f"- **Efficiency:** Shooting below season average ({avg_fg_pct:.1%} vs {season_avg_fg_pct:.1%} FG%)\n"
+        )
+
+    return "".join(analysis_parts)
 
 
 # AI Chatbot class for player performance analysis
@@ -648,6 +885,21 @@ with st.sidebar:
             if image_url:
                 st.image(image_url, width=150, use_container_width=False)
 
+        # Display player attributes
+        player_attrs = get_player_attributes(player_name, df_fp, injury_scraper)
+        if player_attrs:
+            attrs_parts = []
+            if player_attrs.get("team"):
+                attrs_parts.append(f"**Team:** {player_attrs['team']}")
+            if player_attrs.get("position"):
+                attrs_parts.append(f"**Position:** {player_attrs['position']}")
+            if player_attrs.get("height"):
+                attrs_parts.append(f"**Height:** {player_attrs['height']}")
+
+            if attrs_parts:
+                for attr_line in attrs_parts:
+                    st.markdown(attr_line)
+
     # Track the last selected player to detect changes
     if "last_selected_player" not in st.session_state:
         st.session_state.last_selected_player = player_name
@@ -777,31 +1029,81 @@ with tab1:
                     comment = injury_info.get("comment", "")
                     description = injury_info.get("description", "")
 
-                    # Debug: Show what we got (can be removed later)
-                    # st.write(f"Debug - Comment: {comment[:50] if comment else 'None'}...")
-                    # st.write(f"Debug - Description: {description[:50] if description else 'None'}...")
+                    # Get recent games performance analysis
+                    recent_analysis = None
+                    try:
+                        recent_analysis = analyze_recent_games(
+                            player_data_ytd, date_col, num_games=7
+                        )
+                    except Exception:
+                        # Silently fail if analysis can't be generated
+                        pass
 
-                    # Display comment field (primary source of detailed injury info)
+                    # Combine injury comment with performance analysis for better flow
+                    combined_info_parts = []
+
+                    # Add injury comment/description first
                     if comment and comment.strip():
-                        # st.markdown("---")
-                        # st.markdown(f"**📝 Injury Comment:**")
-                        st.info(comment)
-                    # elif description and description.strip():
-                    #     # Fallback to description if comment is not available
-                    #     # st.markdown("---")
-                    #     st.markdown(f"**📝 Injury Details:**")
-                    #     st.info(description)
+                        combined_info_parts.append(f"**Injury Status:** {comment}")
+                    elif description and description.strip():
+                        combined_info_parts.append(f"**Injury Details:** {description}")
+
+                    # Add performance analysis if available
+                    if recent_analysis:
+                        if combined_info_parts:
+                            combined_info_parts.append("")  # Add spacing
+                            combined_info_parts.append("---")
+                            combined_info_parts.append("")
+                        combined_info_parts.append(recent_analysis)
+
+                    # Display combined information
+                    if combined_info_parts:
+                        combined_text = "\n".join(combined_info_parts)
+                        st.info(combined_text)
+                    elif comment or description:
+                        # Fallback: just show comment/description if no analysis
+                        st.info(comment if comment and comment.strip() else description)
                     else:
                         # If neither comment nor description, show status only
                         st.markdown("---")
                         st.write(f"**Status:** {injury_info.get('status', 'Unknown')}")
+                        # Still show performance analysis if available
+                        if recent_analysis:
+                            st.markdown("---")
+                            st.info(recent_analysis)
                 else:
-                    st.success("✅ **Player Status:** Healthy - No current injuries reported")
+                    # Player is healthy - show status with integrated performance analysis
+                    try:
+                        recent_analysis = analyze_recent_games(
+                            player_data_ytd, date_col, num_games=7
+                        )
+                        if recent_analysis:
+                            # Combine healthy status with performance analysis
+                            combined_text = f"✅ **Player Status:** Healthy - No current injuries reported\n\n---\n\n{recent_analysis}"
+                            st.info(combined_text)
+                        else:
+                            st.success(
+                                "✅ **Player Status:** Healthy - No current injuries reported"
+                            )
+                    except Exception:
+                        # Fallback to just status if analysis fails
+                        st.success("✅ **Player Status:** Healthy - No current injuries reported")
             except Exception as e:
                 st.warning(f"⚠️ Could not fetch injury information: {e}")
                 import traceback
 
                 st.error(f"Error details: {traceback.format_exc()}")
+
+                # Still show performance analysis even if injury fetch fails
+                try:
+                    recent_analysis = analyze_recent_games(player_data_ytd, date_col, num_games=7)
+                    if recent_analysis:
+                        st.markdown("---")
+                        st.markdown("**📊 Recent Performance Analysis:**")
+                        st.info(recent_analysis)
+                except Exception:
+                    # Silently fail if analysis can't be generated
+                    pass
 
             game_log, ai_analysis = st.tabs(["Game Log", "🤖 AI Analysis (beta)"])
             with game_log:
