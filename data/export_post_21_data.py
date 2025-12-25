@@ -6,17 +6,19 @@ This script loads data from Kaggle, processes it, filters for dates >= 2021-10-1
 and exports to PlayerStatistics_transformed_post_21.csv
 """
 
-import pandas as pd
-import kagglehub
-from kagglehub import KaggleDatasetAdapter
-import numpy as np
+import os
 import warnings
 
+import kagglehub
+import numpy as np
+import pandas as pd
+from kagglehub import KaggleDatasetAdapter
+
 # Set pandas display options
-pd.set_option('display.max_columns', None)
+pd.set_option("display.max_columns", None)
 
 # Suppress DtypeWarning for mixed types in CSV columns
-warnings.filterwarnings('ignore', category=pd.errors.DtypeWarning)
+warnings.filterwarnings("ignore", category=pd.errors.DtypeWarning)
 
 
 def load_and_process_data():
@@ -31,10 +33,10 @@ def load_and_process_data():
     except Exception as e:
         print(f"Error loading dataset from Kaggle: {e}")
         raise
-    
+
     # Process in-place where possible to save memory
     df["player_name"] = df["firstName"] + " " + df["lastName"]
-    
+
     if "gameDateTimeEst" in df.columns:
         # Store raw copy only if needed for fallback
         df["gameDateTimeEst"] = pd.to_datetime(
@@ -51,7 +53,7 @@ def load_and_process_data():
         # Convert to timezone-naive if needed
         if df["gameDateTimeEst"].dt.tz is not None:
             df["gameDateTimeEst"] = df["gameDateTimeEst"].dt.tz_localize(None)
-    
+
     # Calculate fantasy points
     df["FP"] = (
         df["points"] * 1.0  # Points scored
@@ -61,7 +63,7 @@ def load_and_process_data():
         + df["steals"] * 3.0  # Steals
         + df["turnovers"] * -1.0  # Turnovers (negative)
     )
-    
+
     # Add '@' prefix to opponent team name when playing away (home == 0)
     # Use vectorized operation instead of copying
     if "home" in df.columns:
@@ -70,13 +72,13 @@ def load_and_process_data():
         )
     else:
         df["opponent_with_at"] = df["opponentteamName"]
-    
+
     # Create game_loc_date more efficiently
     df["game_loc_date"] = df["gameDateTimeEst"].astype(str) + " " + df["opponent_with_at"]
 
     # Return a copy to ensure the cached data is immutable
     df_copy = df.copy()
-    
+
     return df_copy
 
 
@@ -84,23 +86,27 @@ def main():
     """Main function to load, process, filter, and export data."""
     print("Loading and processing data from Kaggle...")
     df_fp = load_and_process_data()
-    
+
     print(f"Total records loaded: {len(df_fp)}")
-    
+
     # Filter for dates >= 2021-10-19
     print("Filtering for dates >= 2021-10-19...")
-    post_21 = df_fp[df_fp['gameDateTimeEst'] >= '2021-10-19']
-    
+    post_21 = df_fp[df_fp["gameDateTimeEst"] >= "2021-10-19"]
+
     print(f"Records after filtering: {len(post_21)}")
-    
-    # Export to CSV (save to current directory since script runs from data/)
-    output_file = 'PlayerStatistics_transformed_post_21.csv'
+
+    # Export to CSV (save to the same directory as this script)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    output_file = os.path.join(script_dir, "PlayerStatistics_transformed_post_21.csv")
     print(f"Exporting to {output_file}...")
+    # Ensure the output directory exists
+    output_dir = os.path.dirname(output_file)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
     post_21.to_csv(output_file, index=False)
-    
+
     print(f"✅ Successfully exported {len(post_21)} records to {output_file}")
 
 
 if __name__ == "__main__":
     main()
-
