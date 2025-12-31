@@ -1,6 +1,12 @@
 """Utility functions for Fantasy Points Analyzer application."""
 
+import os
+import tempfile
+import zipfile
+from io import BytesIO
+
 import pandas as pd
+import requests
 
 
 def find_and_process_date_column(data):
@@ -485,3 +491,143 @@ def analyze_recent_games(player_data, date_col, num_games=7):
         )
 
     return "".join(analysis_parts)
+
+
+def load_data_from_github_artifact(
+    repo_owner="chriztopherton",
+    repo_name="nbafantasizer",
+    workflow_name="Update NBA Player Statistics Data",
+    artifact_name="player-statistics-post-21",
+    github_token=None,
+    fallback_path="data/PlayerStatistics_transformed_post_21.csv",
+):
+    """
+    Load CSV data from the latest GitHub Actions artifact.
+
+    Downloads the latest artifact from a GitHub Actions workflow run and returns
+    it as a pandas DataFrame. Falls back to a local file if the download fails.
+
+    Args:
+        repo_owner (str): GitHub repository owner (default: "chriztopherton").
+        repo_name (str): GitHub repository name (default: "nbafantasizer").
+        workflow_name (str): Name of the workflow (default: "Update NBA Player Statistics Data").
+        artifact_name (str): Name of the artifact to download (default: "player-statistics-post-21").
+        github_token (str, optional): GitHub personal access token for authentication.
+                                      If None, uses GITHUB_TOKEN env var or unauthenticated requests.
+        fallback_path (str): Local file path to use if artifact download fails
+                            (default: "data/PlayerStatistics_transformed_post_21.csv").
+
+    Returns:
+        pd.DataFrame: The loaded CSV data as a pandas DataFrame.
+    """
+    # Get GitHub token from environment if not provided
+    if github_token is None:
+        github_token = os.getenv("GITHUB_TOKEN")
+
+    api_base = "https://api.github.com"
+    headers = {"Accept": "application/vnd.github+json"}
+    if github_token:
+        headers["Authorization"] = f"Bearer {github_token}"
+
+    try:
+        # Get workflow runs - try to find workflow by filename first (more reliable)
+        # The workflow file is: .github/workflows/update_nba_data.yml
+        # So we can search for workflows with that path
+        workflow_file = "update_nba_data.yml"
+        workflows_url = f"{api_base}/repos/{repo_owner}/{repo_name}/actions/workflows"
+        response = requests.get(workflows_url, headers=headers, timeout=10)
+        
+        # Handle rate limiting or authentication issues
+        if response.status_code == 403:
+            raise ValueError("GitHub API rate limit exceeded or authentication required")
+        if response.status_code == 404:
+            raise ValueError(f"Repository {repo_owner}/{repo_name} not found or not accessible")
+        
+        response.raise_for_status()
+        workflows_data = response.json()
+        workflows = workflows_data.get("workflows", [])
+
+        # Find the workflow by name or path
+        workflow_id = None
+        for workflow in workflows:
+            if workflow.get("name") == workflow_name or workflow_file in workflow.get("path", ""):
+                workflow_id = workflow.get("id")
+                break
+
+        if not workflow_id:
+            raise ValueError(f"Workflow '{workflow_name}' not found")
+
+        # Get the latest successful workflow run
+        runs_url = f"{api_base}/repos/{repo_owner}/{repo_name}/actions/workflows/{workflow_id}/runs"
+        response = requests.get(
+            runs_url, headers=headers, params={"per_page": 1, "status": "success"}, timeout=10
+        )
+        response.raise_for_status()
+        runs_data = response.json()
+        runs = runs_data.get("workflow_runs", [])
+
+        if not runs:
+            raise ValueError("No successful workflow runs found")
+
+        run_id = runs[0].get("id")
+
+        # Get artifacts for this run
+        artifacts_url = f"{api_base}/repos/{repo_owner}/{repo_name}/actions/runs/{run_id}/artifacts"
+        response = requests.get(artifacts_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        artifacts_data = response.json()
+        artifacts = artifacts_data.get("artifacts", [])
+
+        # Find the artifact by name
+        artifact = None
+        for art in artifacts:
+            if art.get("name") == artifact_name:
+                artifact = art
+                break
+
+        if not artifact:
+            raise ValueError(f"Artifact '{artifact_name}' not found in latest run")
+
+        # Download the artifact (it's a zip file)
+        # The archive_download_url requires authentication
+        download_url = artifact.get("archive_download_url")
+        if not download_url:
+            raise ValueError("Artifact download URL not found")
+        
+        if not github_token:
+            raise ValueError("GitHub token required to download artifacts")
+
+        response = requests.get(download_url, headers=headers, timeout=30, stream=True)
+        response.raise_for_status()
+
+        # Extract CSV from zip
+        with zipfile.ZipFile(BytesIO(response.content)) as zip_file:
+            # Find the CSV file in the zip (artifact contains: data/PlayerStatistics_transformed_post_21.csv)
+            csv_files = [f for f in zip_file.namelist() if f.endswith(".csv")]
+            if not csv_files:
+                raise ValueError("No CSV file found in artifact")
+
+            # Read the CSV file (prefer the expected filename)
+            csv_file = None
+            for f in csv_files:
+                if "PlayerStatistics_transformed_post_21.csv" in f:
+                    csv_file = f
+                    break
+            if not csv_file:
+                csv_file = csv_files[0]  # Use first CSV found
+
+            csv_content = zip_file.read(csv_file)
+            df = pd.read_csv(BytesIO(csv_content))
+
+        return df
+
+    except Exception as e:
+        # Fallback to local file
+        error_msg = str(e)
+        print(f"Warning: Failed to load data from GitHub artifact ({error_msg}). Using local file: {fallback_path}")
+        if os.path.exists(fallback_path):
+            return pd.read_csv(fallback_path)
+        else:
+            raise FileNotFoundError(
+                f"Could not load data from GitHub artifact and local file not found: {fallback_path}"
+            ) from e
