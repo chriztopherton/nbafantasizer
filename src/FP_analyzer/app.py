@@ -7,7 +7,12 @@ from injury_scraper import ESPNInjuryScraper
 from player_analysis import render_player_analysis_tab
 from style import apply_custom_css
 from trade_analyzer import render_trade_analyzer_tab
-from utils import get_player_attributes, get_player_image_url, get_player_person_id
+from utils import (
+    get_player_attributes,
+    get_player_image_url,
+    get_player_person_id,
+    load_data_from_github_artifact,
+)
 
 # Load environment variables
 load_dotenv()
@@ -34,16 +39,14 @@ def get_injury_scraper():
 
 injury_scraper = get_injury_scraper()
 
-# Load data and player list
-# result = load_and_process_data()
-# if isinstance(result, tuple):
-#     df_fp, player_list = result
-# else:
-#     # Fallback for backwards compatibility
-#     df_fp = result
-df_fp = pd.read_csv("data/PlayerStatistics_transformed_post_21.csv")
-# player_list = sorted(df_fp["player_name"].unique()) if len(df_fp) > 0 else []
+# Load data from GitHub Actions artifact (with caching)
+@st.cache_data(ttl=3600)  # Cache for 1 hour to avoid repeated downloads
+def load_player_data():
+    """Load player statistics data from GitHub Actions artifact."""
+    return load_data_from_github_artifact()
 
+
+df_fp = load_player_data()
 player_list = df_fp.groupby("player_name")["FP"].mean().sort_values(ascending=False).index.tolist()
 
 # Check if data loaded successfully
