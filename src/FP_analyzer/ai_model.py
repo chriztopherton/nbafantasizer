@@ -154,6 +154,12 @@ Key Statistical Averages:
             # Add injury information if available
             if injury_info:
                 stats_summary += f"\nInjury Status: {injury_info.get('status', 'Unknown')}\n"
+                team = injury_info.get("team", "")
+                if team:
+                    stats_summary += f"Team: {team}\n"
+                updated = injury_info.get("updated", "")
+                if updated:
+                    stats_summary += f"Last Updated: {updated}\n"
                 if injury_info.get("comment"):
                     stats_summary += f"Injury Details: {injury_info.get('comment')}\n"
 
@@ -308,6 +314,12 @@ TEAM 1 - Players to Trade Away:
    - Median FP: {stats['median_fp']:.2f}"""
                 if injury_info:
                     trade_summary += f"\n   - Injury Status: {injury_info.get('status', 'Unknown')}"
+                    team = injury_info.get("team", "")
+                    if team:
+                        trade_summary += f"\n   - Team: {team}"
+                    updated = injury_info.get("updated", "")
+                    if updated:
+                        trade_summary += f"\n   - Last Updated: {updated}"
                     if injury_info.get("comment"):
                         trade_summary += (
                             f"\n   - Injury Details: {injury_info.get('comment')[:100]}"
@@ -342,6 +354,12 @@ TEAM 2 - Players to Trade For:
    - Median FP: {stats['median_fp']:.2f}"""
                 if injury_info:
                     trade_summary += f"\n   - Injury Status: {injury_info.get('status', 'Unknown')}"
+                    team = injury_info.get("team", "")
+                    if team:
+                        trade_summary += f"\n   - Team: {team}"
+                    updated = injury_info.get("updated", "")
+                    if updated:
+                        trade_summary += f"\n   - Last Updated: {updated}"
                     if injury_info.get("comment"):
                         trade_summary += (
                             f"\n   - Injury Details: {injury_info.get('comment')[:100]}"

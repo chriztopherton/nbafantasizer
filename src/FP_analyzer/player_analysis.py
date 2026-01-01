@@ -105,6 +105,18 @@ def render_player_analysis_tab(
                         else:
                             st.metric("Expected Return", "TBD")
 
+                    # Add second row for team and updated date if available
+                    team = injury_info.get("team", "")
+                    updated = injury_info.get("updated", "")
+                    if team or updated:
+                        col4, col5 = st.columns(2)
+                        with col4:
+                            if team:
+                                st.metric("Team", team)
+                        with col5:
+                            if updated:
+                                st.metric("Last Updated", updated)
+
                     # Get comment and description fields
                     comment = injury_info.get("comment", "")
                     description = injury_info.get("description", "")

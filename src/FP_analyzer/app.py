@@ -1,6 +1,5 @@
 from datetime import datetime
 
-import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from injury_scraper import ESPNInjuryScraper
@@ -38,6 +37,7 @@ def get_injury_scraper():
 
 
 injury_scraper = get_injury_scraper()
+
 
 # Load data from GitHub Actions artifact (with caching)
 @st.cache_data(ttl=3600)  # Cache for 1 hour to avoid repeated downloads
