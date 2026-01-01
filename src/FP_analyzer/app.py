@@ -1,9 +1,9 @@
 from datetime import datetime
 
-import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from injury_scraper import ESPNInjuryScraper
+from nba_stats import display_live_stats, get_player_live_stats
 from player_analysis import render_player_analysis_tab
 from style import apply_custom_css
 from trade_analyzer import render_trade_analyzer_tab
@@ -38,6 +38,7 @@ def get_injury_scraper():
 
 
 injury_scraper = get_injury_scraper()
+
 
 # Load data from GitHub Actions artifact (with caching)
 @st.cache_data(ttl=3600)  # Cache for 1 hour to avoid repeated downloads
@@ -111,6 +112,14 @@ with st.sidebar:
             if attrs_parts:
                 for attr_line in attrs_parts:
                     st.markdown(attr_line)
+
+        # Display live stats if player is currently playing
+        if person_id:
+            live_stats = get_player_live_stats(person_id)
+            if live_stats:
+                st.markdown("---")
+                st.markdown("### 🔴 Live Game")
+                display_live_stats(live_stats)
 
     # Track the last selected player to detect changes
     if "last_selected_player" not in st.session_state:
