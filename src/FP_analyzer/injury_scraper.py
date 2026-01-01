@@ -1,6 +1,7 @@
 """
-ESPN Injury Report Scraper
-Scrapes injury information from ESPN's NBA injuries page
+ESPN and CBS Sports Injury Report Scraper
+Scrapes injury information from ESPN's NBA injuries page and CBS Sports
+to provide enhanced injury reports with team information and updated dates
 """
 
 import re
@@ -10,9 +11,10 @@ from bs4 import BeautifulSoup
 
 
 class ESPNInjuryScraper:
-    """Scraper for ESPN NBA injury reports"""
+    """Scraper for ESPN and CBS Sports NBA injury reports"""
 
     BASE_URL = "https://www.espn.com/nba/injuries"
+    CBS_BASE_URL = "https://www.cbssports.com/nba/injuries/"
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
@@ -21,6 +23,7 @@ class ESPNInjuryScraper:
         self.session = requests.Session()
         self.session.headers.update(self.HEADERS)
         self._injury_cache: dict[str, dict] | None = None
+        self._cbs_injury_cache: dict[str, dict] | None = None
 
     def _normalize_name(self, name: str) -> str:
         """Normalize player name for matching"""
@@ -107,6 +110,95 @@ class ESPNInjuryScraper:
             return {}
         except Exception as e:
             print(f"Error parsing injuries: {e}")
+            return {}
+
+    def fetch_cbs_injuries(self) -> dict[str, dict]:
+        """
+        Fetch all injuries from CBS Sports and return as a dictionary
+        Key: normalized player name, Value: injury info dict with team and updated date
+        """
+        if self._cbs_injury_cache is not None:
+            return self._cbs_injury_cache
+
+        try:
+            response = self.session.get(self.CBS_BASE_URL, timeout=10)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.content, "html.parser")
+
+            injuries = {}
+
+            # CBS Sports uses TableBaseWrapper class for team injury tables
+            team_wrappers = soup.find_all("div", class_="TableBaseWrapper")
+
+            for team_wrapper in team_wrappers:
+                try:
+                    # Extract team name
+                    team_name_elem = team_wrapper.find("div", class_="TeamLogoNameLockup-name")
+                    team_name = team_name_elem.get_text(strip=True) if team_name_elem else ""
+
+                    # Find all player rows
+                    player_rows = team_wrapper.find_all("tr", class_="TableBase-bodyTr")
+
+                    for player_row in player_rows:
+                        try:
+                            cells = player_row.find_all("td", class_="TableBase-bodyTd")
+                            if len(cells) < 5:
+                                continue
+
+                            # Extract player name
+                            name_elem = player_row.find("span", class_="CellPlayerName--long")
+                            if not name_elem:
+                                continue
+                            name = name_elem.get_text(strip=True)
+
+                            if not name or len(name.split()) < 2:
+                                continue
+
+                            # Extract position
+                            position = cells[1].get_text(strip=True) if len(cells) > 1 else ""
+
+                            # Extract updated date
+                            updated_elem = player_row.find("span", class_="CellGameDate")
+                            updated_date = updated_elem.get_text(strip=True) if updated_elem else ""
+
+                            # Extract injury description
+                            injury_desc = cells[3].get_text(strip=True) if len(cells) > 3 else ""
+
+                            # Extract status
+                            status = cells[4].get_text(strip=True) if len(cells) > 4 else ""
+
+                            # Create injury info dict
+                            normalized_name = self._normalize_name(name)
+                            injury_info = {
+                                "name": name,
+                                "team": team_name,
+                                "position": position,
+                                "updated": updated_date,
+                                "injury": injury_desc,
+                                "status": status,
+                            }
+
+                            # Store with normalized name
+                            injuries[normalized_name] = injury_info
+                            # Also store with original name for exact matching
+                            injuries[name.lower()] = injury_info
+
+                        except Exception as e:
+                            print(f"Error extracting player from CBS row: {e}")
+                            continue
+
+                except Exception as e:
+                    print(f"Error processing CBS team wrapper: {e}")
+                    continue
+
+            self._cbs_injury_cache = injuries
+            return injuries
+
+        except requests.RequestException as e:
+            print(f"Error fetching CBS injuries: {e}")
+            return {}
+        except Exception as e:
+            print(f"Error parsing CBS injuries: {e}")
             return {}
 
     def _extract_player_injury_from_row(self, row) -> dict | None:
@@ -353,49 +445,155 @@ class ESPNInjuryScraper:
 
     def get_player_injury(self, player_name: str) -> dict | None:
         """
-        Get injury information for a specific player
+        Get injury information for a specific player from both ESPN and CBS Sports
 
         Args:
             player_name: Player name (e.g., "LeBron James")
 
         Returns:
-            Dictionary with injury info or None if not found/not injured
+            Dictionary with enhanced injury info or None if not found/not injured
+            Enhanced fields include: team, updated (from CBS Sports)
         """
-        injuries = self.fetch_injuries()
+        # Fetch from both sources
+        espn_injuries = self.fetch_injuries()
+        cbs_injuries = self.fetch_cbs_injuries()
 
-        if not injuries:
+        # Try to find player in ESPN injuries
+        espn_injury = None
+        if espn_injuries:
+            # Try exact match first (case-insensitive)
+            player_name_lower = player_name.lower()
+            if player_name_lower in espn_injuries:
+                espn_injury = espn_injuries[player_name_lower]
+            else:
+                # Try normalized match
+                normalized_name = self._normalize_name(player_name)
+                if normalized_name in espn_injuries:
+                    espn_injury = espn_injuries[normalized_name]
+                else:
+                    # Try fuzzy matching
+                    for _injury_name, injury_data in espn_injuries.items():
+                        if self._fuzzy_match(player_name, injury_data["name"]):
+                            espn_injury = injury_data
+                            break
+
+        # Try to find player in CBS Sports injuries
+        cbs_injury = None
+        if cbs_injuries:
+            player_name_lower = player_name.lower()
+            normalized_name = self._normalize_name(player_name)
+
+            if player_name_lower in cbs_injuries:
+                cbs_injury = cbs_injuries[player_name_lower]
+            elif normalized_name in cbs_injuries:
+                cbs_injury = cbs_injuries[normalized_name]
+            else:
+                # Try fuzzy matching
+                for _injury_name, injury_data in cbs_injuries.items():
+                    if self._fuzzy_match(player_name, injury_data["name"]):
+                        cbs_injury = injury_data
+                        break
+
+        # If no injury found in either source, return None
+        if not espn_injury and not cbs_injury:
             return None
 
-        # Try exact match first (case-insensitive)
-        player_name_lower = player_name.lower()
-        if player_name_lower in injuries:
-            return injuries[player_name_lower]
+        # Merge data from both sources, prioritizing ESPN data
+        merged_injury = {}
 
-        # Try normalized match
-        normalized_name = self._normalize_name(player_name)
-        if normalized_name in injuries:
-            return injuries[normalized_name]
+        # Start with ESPN data if available
+        if espn_injury:
+            merged_injury = espn_injury.copy()
+        else:
+            # If only CBS data available, create structure compatible with ESPN format
+            merged_injury = {
+                "name": cbs_injury.get("name", player_name),
+                "status": cbs_injury.get("status", "Unknown"),
+                "description": cbs_injury.get("injury", ""),
+                "comment": cbs_injury.get("injury", ""),
+                "return_date": "",
+                "position": cbs_injury.get("position", ""),
+            }
 
-        # Try fuzzy matching
-        for _injury_name, injury_data in injuries.items():
-            if self._fuzzy_match(player_name, injury_data["name"]):
-                return injury_data
+        # Enhance with CBS Sports data
+        if cbs_injury:
+            # Add team information
+            if "team" in cbs_injury and cbs_injury["team"]:
+                merged_injury["team"] = cbs_injury["team"]
 
-        return None
+            # Add updated date
+            if "updated" in cbs_injury and cbs_injury["updated"]:
+                merged_injury["updated"] = cbs_injury["updated"]
+
+            # Enhance description if CBS has more detailed info
+            cbs_injury_desc = cbs_injury.get("injury", "")
+            if cbs_injury_desc and (
+                not merged_injury.get("description")
+                or len(cbs_injury_desc) > len(merged_injury.get("description", ""))
+            ):
+                merged_injury["description"] = cbs_injury_desc
+                merged_injury["comment"] = cbs_injury_desc
+
+            # Enhance status if CBS has more specific status
+            cbs_status = cbs_injury.get("status", "")
+            if cbs_status and (
+                not merged_injury.get("status") or merged_injury.get("status") == "Unknown"
+            ):
+                merged_injury["status"] = cbs_status
+
+            # Enhance position if missing
+            if not merged_injury.get("position") and cbs_injury.get("position"):
+                merged_injury["position"] = cbs_injury["position"]
+
+        return merged_injury
 
     def get_all_injuries(self) -> list[dict]:
-        """Get list of all injured players"""
-        injuries = self.fetch_injuries()
-        # Return unique injuries (avoid duplicates from multiple keys)
-        seen_names = set()
+        """Get list of all injured players from both ESPN and CBS Sports"""
+        espn_injuries = self.fetch_injuries()
+        cbs_injuries = self.fetch_cbs_injuries()
+
+        # Combine all unique players
+        all_players = set()
         result = []
-        for injury_data in injuries.values():
+
+        # Add ESPN injuries
+        for injury_data in espn_injuries.values():
             name_lower = injury_data["name"].lower()
-            if name_lower not in seen_names:
-                seen_names.add(name_lower)
+            if name_lower not in all_players:
+                all_players.add(name_lower)
                 result.append(injury_data)
+
+        # Add CBS injuries that aren't already in the list
+        for injury_data in cbs_injuries.values():
+            name_lower = injury_data["name"].lower()
+            if name_lower not in all_players:
+                all_players.add(name_lower)
+                # Convert CBS format to standard format
+                result.append(
+                    {
+                        "name": injury_data.get("name", ""),
+                        "status": injury_data.get("status", "Unknown"),
+                        "description": injury_data.get("injury", ""),
+                        "comment": injury_data.get("injury", ""),
+                        "return_date": "",
+                        "position": injury_data.get("position", ""),
+                        "team": injury_data.get("team", ""),
+                        "updated": injury_data.get("updated", ""),
+                    }
+                )
+            else:
+                # Enhance existing injury with CBS data
+                for existing_injury in result:
+                    if existing_injury["name"].lower() == name_lower:
+                        if "team" not in existing_injury and injury_data.get("team"):
+                            existing_injury["team"] = injury_data["team"]
+                        if "updated" not in existing_injury and injury_data.get("updated"):
+                            existing_injury["updated"] = injury_data["updated"]
+                        break
+
         return result
 
     def clear_cache(self):
-        """Clear the injury cache to force a fresh fetch"""
+        """Clear both injury caches to force a fresh fetch"""
         self._injury_cache = None
+        self._cbs_injury_cache = None
