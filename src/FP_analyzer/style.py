@@ -225,25 +225,38 @@ def color_text_gradient(series, cmap_name="Greens"):
     return pd.Series(styles, index=series.index)
 
 
-def apply_game_log_styling(display_df, decimal_columns=None):
+def apply_game_log_styling(display_df, decimal_columns=None, highlight_live_row=False):
     """
     Apply styling to game log dataframe with color gradients.
 
     This function applies green color gradients to positive stat columns
     (FP, points, rebounds, assists, etc.) and red gradients to turnovers.
+    Optionally highlights the first row (live stats) with a different background.
 
     Args:
         display_df: pandas DataFrame to style (game log data)
         decimal_columns: List of column names to format with 2 decimal places
+        highlight_live_row: If True, highlights the first row with a red background
 
     Returns:
         Styled pandas DataFrame ready for display
     """
+    # Update decimal_columns to use new column names
+    if decimal_columns is None:
+        decimal_columns = ["Fan Pts", "FP", "fieldGoals%", "freeThrows%"]
     if decimal_columns is None:
         decimal_columns = ["FP", "fieldGoals%", "freeThrows%"]
 
-    # Columns to apply green gradient styling
+    # Columns to apply green gradient styling (updated for new format)
     columns_to_style = [
+        "Fan Pts",
+        "MIN",
+        "PTS",
+        "REB",
+        "AST",
+        "ST",
+        "BLK",
+        # Legacy column names for backward compatibility
         "FP",
         "numMinutes",
         "points",
@@ -267,21 +280,70 @@ def apply_game_log_styling(display_df, decimal_columns=None):
     # Create styled dataframe with text color gradient
     styled_df = display_df.style.format(format_dict)
 
+    # Highlight live stats row (first row) with red background and white text
+    if highlight_live_row and len(display_df) > 0:
+        # Apply background color to first row
+        def highlight_live(row):
+            if row.name == 0:  # First row
+                return ["background-color: #FF4444; color: white; font-weight: bold;"] * len(row)
+            return [""] * len(row)
+
+        styled_df = styled_df.apply(highlight_live, axis=1)
+
     # Apply text color gradient to positive columns (darker greens for light theme)
+    # Skip first row if it's live stats (already styled)
     for col in columns_to_style:
         if col in display_df.columns:
+            if highlight_live_row and len(display_df) > 0:
+                # Apply gradient only to rows after the first
+                def gradient_with_skip(series):
+                    result = pd.Series(index=series.index, dtype=object)
+                    for idx in series.index:
+                        if idx == 0 and highlight_live_row:
+                            result[idx] = "color: white; background-color: transparent;"
+                        else:
+                            # Apply gradient for other rows
+                            grad_series = color_text_gradient(series.loc[[idx]], cmap_name="Greens")
+                            result[idx] = grad_series.iloc[0]
+                    return result
+
+                styled_df = styled_df.apply(
+                    gradient_with_skip,
+                    subset=[col],
+                    axis=0,
+                )
+            else:
+                styled_df = styled_df.apply(
+                    lambda x: color_text_gradient(x, cmap_name="Greens"),
+                    subset=[col],
+                    axis=0,
+                )
+
+    # Apply red text color gradient to turnovers (skip first row if live)
+    turnover_cols = [col for col in ["TO", "turnovers"] if col in display_df.columns]
+    if turnover_cols:
+        if highlight_live_row and len(display_df) > 0:
+
+            def turnover_gradient_with_skip(series):
+                result = pd.Series(index=series.index, dtype=object)
+                for idx in series.index:
+                    if idx == 0:
+                        result[idx] = "color: white; background-color: transparent;"
+                    else:
+                        grad_series = color_text_gradient(series.loc[[idx]], cmap_name="Reds")
+                        result[idx] = grad_series.iloc[0]
+                return result
+
             styled_df = styled_df.apply(
-                lambda x: color_text_gradient(x, cmap_name="Greens"),
-                subset=[col],
+                turnover_gradient_with_skip,
+                subset=turnover_cols,
                 axis=0,
             )
-
-    # Apply red text color gradient to turnovers
-    if "turnovers" in display_df.columns:
-        styled_df = styled_df.apply(
-            lambda x: color_text_gradient(x, cmap_name="Reds"),
-            subset=["turnovers"],
-            axis=0,
-        )
+        else:
+            styled_df = styled_df.apply(
+                lambda x: color_text_gradient(x, cmap_name="Reds"),
+                subset=turnover_cols,
+                axis=0,
+            )
 
     return styled_df
