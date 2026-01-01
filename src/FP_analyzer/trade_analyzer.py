@@ -211,13 +211,31 @@ def _render_team_stats(team_stats, injury_scraper):
             if injury_info:
                 stats["health_status"] = injury_info.get("status", "Unknown")
                 injury_comment = injury_info.get("comment", "")
+
+                # Build health note with enhanced information
+                health_note_parts = []
+
+                # Add team if available
+                team = injury_info.get("team", "")
+                if team:
+                    health_note_parts.append(f"Team: {team}")
+
+                # Add comment/description
                 if injury_comment:
                     # Truncate long comments
-                    stats["health_note"] = (
-                        injury_comment[:100] + "..."
-                        if len(injury_comment) > 100
-                        else injury_comment
+                    truncated_comment = (
+                        injury_comment[:80] + "..." if len(injury_comment) > 80 else injury_comment
                     )
+                    health_note_parts.append(truncated_comment)
+
+                # Add updated date if available
+                updated = injury_info.get("updated", "")
+                if updated:
+                    health_note_parts.append(f"Updated: {updated}")
+
+                # Combine parts or fall back to status
+                if health_note_parts:
+                    stats["health_note"] = " | ".join(health_note_parts)
                 else:
                     stats["health_note"] = stats["health_status"]
             else:

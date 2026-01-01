@@ -1,7 +1,6 @@
 """Utility functions for Fantasy Points Analyzer application."""
 
 import os
-import tempfile
 import zipfile
 from io import BytesIO
 
@@ -536,13 +535,13 @@ def load_data_from_github_artifact(
         workflow_file = "update_nba_data.yml"
         workflows_url = f"{api_base}/repos/{repo_owner}/{repo_name}/actions/workflows"
         response = requests.get(workflows_url, headers=headers, timeout=10)
-        
+
         # Handle rate limiting or authentication issues
         if response.status_code == 403:
             raise ValueError("GitHub API rate limit exceeded or authentication required")
         if response.status_code == 404:
             raise ValueError(f"Repository {repo_owner}/{repo_name} not found or not accessible")
-        
+
         response.raise_for_status()
         workflows_data = response.json()
         workflows = workflows_data.get("workflows", [])
@@ -593,7 +592,7 @@ def load_data_from_github_artifact(
         download_url = artifact.get("archive_download_url")
         if not download_url:
             raise ValueError("Artifact download URL not found")
-        
+
         if not github_token:
             raise ValueError("GitHub token required to download artifacts")
 
@@ -624,7 +623,9 @@ def load_data_from_github_artifact(
     except Exception as e:
         # Fallback to local file
         error_msg = str(e)
-        print(f"Warning: Failed to load data from GitHub artifact ({error_msg}). Using local file: {fallback_path}")
+        print(
+            f"Warning: Failed to load data from GitHub artifact ({error_msg}). Using local file: {fallback_path}"
+        )
         if os.path.exists(fallback_path):
             return pd.read_csv(fallback_path)
         else:
